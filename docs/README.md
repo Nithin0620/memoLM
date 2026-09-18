@@ -1,10 +1,16 @@
-# MemoLM Documentation Index 📚
+# MemoLM Documentation Master Index 📚
 
 Welcome to the **MemoLM** technical documentation suite.
 
+## 🏁 Start Here
+1. [**`00_CORE_CONCEPTS_AND_WHY.md`**](00_CORE_CONCEPTS_AND_WHY.md) — The fundamental mental model: Why semantic caching alone breaks in production and how the Safety Gate solves it.
+2. [**`00_QUICKSTART_AND_SETUP.md`**](00_QUICKSTART_AND_SETUP.md) — 1-minute local development setup, Docker compose services, port mappings, and mock mode guide.
+
+---
+
 ## 👥 Module Ownership & Developer Guides
 
-Each core module of MemoLM has its own dedicated documentation directory and end-to-end implementation specifications:
+Each core module of MemoLM has its own dedicated directory with end-to-end architecture and implementation specifications:
 
 | Module | Component | Owner | Tech Stack | Documentation Directory |
 | :--- | :--- | :--- | :--- | :--- |
