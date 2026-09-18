@@ -1,8 +1,21 @@
 # MemoLM Documentation Index 📚
 
-Welcome to the **MemoLM** technical documentation.
+Welcome to the **MemoLM** technical documentation suite.
 
-## 📑 Contents
+## 👥 Module Ownership & Guides for Developers
+
+Each core module of MemoLM has its own dedicated documentation guide and specification for developers:
+
+| Module | Component | Owner | Tech Stack | Documentation |
+| :--- | :--- | :--- | :--- | :--- |
+| **`1`** | **App & UI** | Frontend Dev | Next.js 14, Tailwind, Tremor/Recharts | [**`docs/1_app_and_ui/`**](1_app_and_ui/README.md) |
+| **`2`** | **Core Engine & Gateway** | Backend Dev | Python 3.11, FastAPI, Redis, Qdrant | [**`docs/2_core_engine/`**](2_core_engine/README.md) |
+| **`3a`** | **Python SDK** | Python Dev | Python 3.9+, Pydantic | [**`docs/3a_python_sdk/`**](3a_python_sdk/README.md) |
+| **`3b`** | **TypeScript SDK** | TS/JS Dev | TypeScript, Fetch/OpenAI wire | [**`docs/3b_typescript_sdk/`**](3b_typescript_sdk/README.md) |
+
+---
+
+## 📑 System Specifications
 
 1. [**System Architecture & Technical Design**](01_architecture.md)
    * High-level system topology
