@@ -1,0 +1,24 @@
+name: PR Description Validation
+
+on:
+  pull_request:
+    types: [opened, edited]
+
+jobs:
+  validate-description:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Validate PR Description
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_EVENT_PATH: ${{ github.event_path }}
+        run: |
+          python .github/scripts/pr_description_validation.py

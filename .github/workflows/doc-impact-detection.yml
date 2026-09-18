@@ -1,0 +1,24 @@
+name: Documentation Impact Detection
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+jobs:
+  doc-impact-check:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Run Doc Impact Detection
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_EVENT_PATH: ${{ github.event_path }}
+        run: |
+          python .github/scripts/doc_impact_detection.py
