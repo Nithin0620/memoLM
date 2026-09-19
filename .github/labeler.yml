@@ -1,0 +1,21 @@
+frontend:
+  - 'frontend/**/*'
+  - '**/frontend/**/*'
+
+backend:
+  - 'backend/**/*'
+  - '**/backend/**/*'
+
+documentation:
+  - 'docs/**/*'
+  - '**.md'
+  - 'LICENSE'
+
+tests:
+  - '**/tests/**/*'
+  - '**/test_*'
+  - '**/*_test.*'
+  - '**/*.spec.*'
+
+ci:
+  - '.github/**/*'
