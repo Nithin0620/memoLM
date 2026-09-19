@@ -1,0 +1,51 @@
+name: Issue Auto Labeler
+
+on:
+  issues:
+    types: [opened, edited]
+
+permissions:
+  issues: write
+
+jobs:
+  auto-label:
+    name: Auto Label Issue by Content
+    runs-on: ubuntu-latest
+    steps:
+      - name: Analyze Content and Apply Labels
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issue = context.payload.issue;
+            const text = `${issue.title} ${issue.body || ''}`.toLowerCase();
+            const labelsToAdd = new Set();
+
+            // Bug keywords e.g., "login not working", "crash", "error", "fail", "bug"
+            if (/login not working|not working|error|bug|fail|crash|broken|exception|fault|fix/.test(text)) {
+              labelsToAdd.add('bug');
+            }
+
+            // Feature keywords e.g., "add dark mode", "feature", "enhancement", "request", "support for"
+            if (/add dark mode|feature|add|implement|support|enable|request|enhance/.test(text)) {
+              labelsToAdd.add('feature');
+            }
+
+            // Documentation keywords e.g., "readme typo", "docs", "documentation", "guide", "typo"
+            if (/readme typo|doc|docs|documentation|readme|typo|comment|guide|tutorial/.test(text)) {
+              labelsToAdd.add('documentation');
+            }
+
+            // Security keywords
+            if (/security|vulnerability|exploit|cve|leak|auth|token|secret/.test(text)) {
+              labelsToAdd.add('security');
+            }
+
+            if (labelsToAdd.size > 0) {
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                labels: Array.from(labelsToAdd)
+              });
+              console.log(`Added labels to issue #${issue.number}:`, Array.from(labelsToAdd));
+            }

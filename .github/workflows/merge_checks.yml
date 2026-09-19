@@ -1,0 +1,74 @@
+name: PR Merge Checks
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited, review_requested, reviewed]
+
+permissions:
+  contents: read
+  pull-requests: write
+  checks: read
+  statuses: read
+
+jobs:
+  merge-checks:
+    name: Verify Merge Readiness
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check PR Merge Eligibility
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            const prBody = pr.body || '';
+            let failed = false;
+            const messages = [];
+
+            // 1. Check checklist completion
+            if (prBody.includes('- [ ]')) {
+              failed = true;
+              messages.push('❌ Required checklist items are incomplete. Please check all boxes in PR description.');
+            } else {
+              messages.push('✅ PR checklist is completed.');
+            }
+
+            // 2. Check linked issue exists
+            const issueRegex = /(fixes|fixes|closes|closes|resolves|refs|#)\s*#?\d+/i;
+            if (!issueRegex.test(prBody) && !/issue-\d+/i.test(pr.head.ref)) {
+              failed = true;
+              messages.push('❌ No linked issue found. Please link an issue in the description (e.g., Fixes #123).');
+            } else {
+              messages.push('✅ Linked issue found.');
+            }
+
+            // 3. Check merge conflict / mergeable state
+            if (pr.mergeable === false) {
+              failed = true;
+              messages.push('❌ PR has merge conflicts with base branch.');
+            } else {
+              messages.push('✅ No merge conflicts detected.');
+            }
+
+            // 4. Check approvals
+            try {
+              const reviews = await github.rest.pulls.listReviews({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: pr.number
+              });
+              const approved = reviews.data.some(r => r.state === 'APPROVED');
+              if (!approved) {
+                console.log('⚠️ Warning: PR does not yet have an approving review.');
+              } else {
+                messages.push('✅ PR has approval.');
+              }
+            } catch (e) {
+              console.log('Error fetching reviews:', e);
+            }
+
+            console.log('--- Merge Check Results ---');
+            console.log(messages.join('\n'));
+
+            if (failed) {
+              core.setFailed('PR Merge Checks failed. Details:\n' + messages.join('\n'));
+            }

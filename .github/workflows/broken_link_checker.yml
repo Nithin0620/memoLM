@@ -1,0 +1,30 @@
+name: Broken Link Checker
+
+on:
+  schedule:
+    - cron: '0 0 * * 0' # Run weekly on Sunday midnight
+  pull_request:
+    paths:
+      - 'README.md'
+      - 'docs/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  link-checker:
+    name: Check Broken Links in Documentation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Lychee Broken Link Checker
+        uses: lycheeverse/lychee-action@v1.9.0
+        with:
+          args: --verbose --no-progress './README.md' './docs/**/*.md'
+          fail: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

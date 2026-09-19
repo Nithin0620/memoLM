@@ -1,0 +1,55 @@
+name: Issue Auto Assignment
+
+on:
+  issues:
+    types: [opened, labeled]
+
+permissions:
+  issues: write
+
+jobs:
+  auto-assign:
+    name: Assign Maintainers by Domain
+    runs-on: ubuntu-latest
+    steps:
+      - name: Assign Maintainers
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issue = context.payload.issue;
+            const labels = issue.labels.map(l => l.name.toLowerCase());
+            const titleAndBody = `${issue.title} ${issue.body || ''}`.toLowerCase();
+
+            // Define domain maintainers (defaults to issue author / repository owner if configured)
+            // Environment / repo variables or fallback assignees
+            const backendMaintainers = process.env.BACKEND_MAINTAINERS ? process.env.BACKEND_MAINTAINERS.split(',') : [context.repo.owner];
+            const frontendMaintainers = process.env.FRONTEND_MAINTAINERS ? process.env.FRONTEND_MAINTAINERS.split(',') : [context.repo.owner];
+            const docsMaintainers = process.env.DOCS_MAINTAINERS ? process.env.DOCS_MAINTAINERS.split(',') : [context.repo.owner];
+
+            const assignees = new Set();
+
+            if (labels.includes('backend') || titleAndBody.includes('backend') || titleAndBody.includes('api') || titleAndBody.includes('python')) {
+              backendMaintainers.forEach(m => m && assignees.add(m.trim()));
+            }
+
+            if (labels.includes('frontend') || titleAndBody.includes('frontend') || titleAndBody.includes('ui') || titleAndBody.includes('react')) {
+              frontendMaintainers.forEach(m => m && assignees.add(m.trim()));
+            }
+
+            if (labels.includes('documentation') || titleAndBody.includes('doc') || titleAndBody.includes('readme')) {
+              docsMaintainers.forEach(m => m && assignees.add(m.trim()));
+            }
+
+            if (assignees.size > 0) {
+              try {
+                await github.rest.issues.addAssignees({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issue.number,
+                  assignees: Array.from(assignees)
+                });
+                console.log(`Assigned issue #${issue.number} to:`, Array.from(assignees));
+              } catch (e) {
+                console.log(`Failed to assign maintainers: ${e}`);
+              }
+            }

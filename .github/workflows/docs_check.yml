@@ -1,0 +1,63 @@
+name: Documentation Check
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  check-docs:
+    name: Verify Documentation Updates
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check API/Code and Doc Changes
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data: files } = await github.rest.pulls.listFiles({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.payload.pull_request.number,
+            });
+
+            const filenames = files.map(f => f.filename);
+            const apiCodeChanged = filenames.some(f =>
+              f.startsWith('backend/') ||
+              f.startsWith('sdk/') ||
+              f.startsWith('frontend/')
+            );
+
+            const docsChanged = filenames.some(f =>
+              f.startsWith('docs/') ||
+              f.endsWith('.md')
+            );
+
+            console.log(`API/Code Changed: ${apiCodeChanged}, Docs Changed: ${docsChanged}`);
+
+            if (apiCodeChanged && !docsChanged) {
+              const warningMsg = '⚠️ **Documentation Warning**: This PR modifies core API/code files (`backend/`, `frontend/`, or `sdk/`), but no documentation files (`docs/` or `*.md`) were updated. Please review if documentation should be added or updated.';
+
+              console.log(warningMsg);
+
+              // Post warning comment on PR
+              try {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: context.payload.pull_request.number,
+                  body: warningMsg
+                });
+              } catch (e) {
+                console.log('Error creating comment:', e);
+              }
+            } else {
+              console.log('✅ Documentation check passed.');
+            }
