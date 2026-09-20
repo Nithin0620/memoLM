@@ -40,12 +40,38 @@ A returned TTL of `0` means "never cache" — the Safety Gate treats every candi
 
 The `0` bucket (medical, legal, financial-personal, credentials/security) catches critical queries that should not be cached at all. Anchor prompts and keywords are defined in `TTL_BUCKETS` (one `anchors` list and one `keywords` list per bucket) and are easy to tune.
 
-## Embedding (`embedding.py`)
+## Embedding (`embedding/` package)
 
-`embedding.py` wraps the `BAAI/bge-small-en-v1.5` model so both the TTL router and the Qdrant search pipeline share one model instance.
+The `embedding/` package wraps the `BAAI/bge-small-en-v1.5` model so the TTL router and the Qdrant search pipeline share one model instance.
 
-- `get_model()` — loads the model the first time it's needed and reuses it forever after (simple `_model` cache, no magic).
-- `embed(texts)` — embeds a list of texts in one batch and converts the results to `numpy` arrays.
-- `embed_text(text)` — convenience wrapper: pass one string, get one vector back.
+- `embedding/embedding.py` — the model wrapper:
+  - `get_model()` — loads the model the first time it's needed and reuses it forever after (simple `_model` cache, no magic).
+  - `embed(texts)` — embeds a list of texts in one batch and converts the results to `numpy` arrays.
+  - `embed_text(text)` — convenience wrapper: pass one string, get one vector back.
+  - `embed_messages_with_context(messages)` — request-level stitcher: takes a full `messages` array, slices the last 5, stitches, embeds.
+- `embedding/context_chain.py` — server-side rolling context (Single-Query Context Problem):
+  - `session_key(session_id)` — the Redis list key `memolm:session:{sid}:messages`.
+  - `build_context_text(current_query, recent_messages)` — appends the present query to the stored texts, keeps the last 5, drops oldest turns while estimated tokens exceed 512 (bge-small's window), then stitches with `". "`.
+  - `embed_with_context(current_query, recent_messages)` — embeds the stitched context + query as **one vector**.
+  - `payload_fields_for(current_query, recent_messages)` — the `context_queries` / `context_text` / `chain_depth` fields to store in the Qdrant point on write-back.
 
-This runs fully offline after the first download — no API key, no per-call cost.
+The package intentionally has **no `__init__.py`** (a namespace package) — imports are fully explicit:
+
+```python
+from embedding.embedding import embed, embed_text, embed_messages_with_context
+from embedding.context_chain import build_context_text, embed_with_context, payload_fields_for
+```
+
+All runs fully offline after the first model download — no API key, no per-call cost.
+
+### Context flow (API sends only the present query)
+
+```
+Redis  memolm:session:{sid}:messages = ["I like the Camry", "what is the price", ...]
+  -> append present query, LTRIM to 5
+  -> embed_with_context(query, stored_texts)   # one stitched, embedded vector
+  -> Qdrant search with that vector
+  -> on write-back store payload_fields_for(...) so repeats embed identically
+```
+
+    

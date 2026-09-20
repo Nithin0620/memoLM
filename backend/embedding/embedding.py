@@ -37,12 +37,12 @@ def embed_messages_with_context(messages: list) -> np.ndarray:
             return embed_text(messages[0].get("content", ""))
         return embed_text(messages[0])
         
-    # 2. Grab the last 3 messages so we have recent context, but not too much noise
+    # 2. Grab the last 5 messages so we have recent context, but not too much noise
     recent_messages = messages[-5:]
     
     stitched_text = ""
     for msg in recent_messages:
-        # We check if it's a dict (OpenAI format) or just a plain string
+        # We check if it's a dict or just a plain string
         if isinstance(msg, dict):
             role = msg.get("role", "user")
             content = msg.get("content", "")

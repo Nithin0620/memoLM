@@ -3,7 +3,7 @@ from typing import Dict, List, Optional
 
 import numpy as np
 
-from embedding import embed, embed_text
+from embedding.embedding import embed, embed_text
 
 DEFAULT_TTL = 86400
 SEMANTIC_FLOOR = 0.55
