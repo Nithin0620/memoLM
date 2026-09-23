@@ -2,11 +2,47 @@
 
 FastAPI async gateway with Qdrant semantic cache (single store) and the Safety Gate engine.
 
+## API Gateway (`main.py`)
 
+`main.py` is the live FastAPI implementation of the OpenAI/Groq-compatible `POST /v1/chat/completions` endpoint. It runs with `uvicorn` (`127.0.0.1:8000`, `--reload`) and uses **Groq (`llama-3.3-70b-versatile`) as the upstream LLM**.
+
+The gateway keeps **two views of the same conversation**:
+
+```python
+full_messages  = messages          # entire history  → sent to Groq (correct, contextual answers)
+cache_messages = messages[-10:]    # last 10 turns   → sent to Qdrant (cheap search vector)
+```
+
+- **Cache lookup** embeds only `cache_messages` — the context chain then rolls it down to the last 5 turns, keeping embeddings fast without diluting the vector.
+- **Cache HIT** serves the stored answer instantly. With `stream=True` it re-emits the cached text as fake SSE chunks (same typing effect, ~20 ms); otherwise it returns a `chat.completion`-shaped JSON with the verdict under `memolm_stats`.
+- **Cache MISS** forwards `full_messages` to Groq (streaming or not), pipes the response back to the client, then writes it to the cache via `save_to_cache` — but only when `dynamic_ttl` resolved `ttl > 0`.
+
+MemoLM headers consumed by the gateway:
+
+| Header | Required | Behavior |
+| :-- | :-- | :-- |
+| `x-memolm-tenant` | optional | Tenant isolation (default `"default-tenant"`). |
+| `x-memolm-version` | **yes** | `knowledge_version` for the Safety Gate. If missing, the cache is skipped entirely and the request always goes to the LLM — **there is no silent default**. |
+
+`risk_level` is hardcoded to `"low"` in the gateway, so every hit must clear the Safety Gate's strict `low` threshold of similarity ≥ **0.95**.
+
+## Test client (`test_client.py`)
+
+`test_client.py` is a minimal end-to-end smoke test. It points the official Groq SDK at the local gateway (`base_url="http://127.0.0.1:8000/v1"`) and makes a streaming request with the MemoLM headers, printing chunks as they arrive:
+
+```python
+client = Groq(base_url="http://127.0.0.1:8000/v1", api_key="memo-key")  # key is ignored
+client.chat.completions.create(
+    model="llama-3.3-70b-versatile",
+    messages=[...],
+    stream=True,
+    extra_headers={"x-memolm-tenant": "acme-corp", "x-memolm-version": "v1"},
+)
+```
 
 ## Dynamic TTL (Semantic Routing)
 
-`dynamic_ttl.py` decides how long a cached answer stays valid. It is a **hybrid router**: explicit keyword hits boost a TTL bucket deterministically (e.g. `"breaking"`, `"how to"`, `"password"`), and the embedding model (`BAAI/bge-small-en-v1.5`) routes paraphrases via cosine similarity against **8 anchor vectors per bucket**. A confidence floor plus a winner-margin gate makes ambiguous queries fall back to the default TTL instead of guessing.
+`dynamic_ttl.py` decides how long a cached answer stays valid. It is a **hybrid router**: explicit keyword hits boost a TTL bucket deterministically (e.g. `"breaking"`, `"how to"`, `"password"`, `"now"`), and the embedding model (`BAAI/bge-small-en-v1.5`) routes paraphrases via cosine similarity against **8 anchor vectors per bucket**. A confidence floor plus a winner-margin gate makes ambiguous queries fall back to the default TTL instead of guessing.
 
 `get_semantic_ttl` can also force *never cache* for high-risk requests via `risk_level="high"`.
 
@@ -38,7 +74,7 @@ get_semantic_ttl("call the provider", risk_level="high")            # -> 0  (nev
 
 A returned TTL of `0` means "never cache" — the Safety Gate treats every candidate as expired (`now > created_at + 0`), so these requests always route to the upstream LLM.
 
-The `0` bucket (medical, legal, financial-personal, credentials/security) catches critical queries that should not be cached at all. Anchor prompts and keywords are defined in `TTL_BUCKETS` (one `anchors` list and one `keywords` list per bucket) and are easy to tune.
+The `0` bucket (medical, legal, financial-personal, credentials/security) catches critical queries that should not be cached at all. It also matches the bare keyword `"now"`, so "right now"-style current-moment phrasing (which goes stale the instant it's answered) is biased toward never-caching too. Anchor prompts and keywords are defined in `TTL_BUCKETS` (one `anchors` list and one `keywords` list per bucket) and are easy to tune.
 
 ## Embedding (`embedding/` package)
 
@@ -76,6 +112,19 @@ Gateway receives full OpenAI-style messages list
 MemoLM uses **Qdrant** as its unified vector and cache store. Every cached response is saved as a Qdrant Point containing:
 - **Vector**: 384-dimensional dense embedding of the context-stitched conversation.
 - **Payload**: Full metadata including `tenant_id`, `provider`, `model`, `knowledge_version`, `created_at`, `expiry`, and `response`.
+
+### Safety Gate checks (`fetch_from_cache`)
+
+Every candidate found in Qdrant must pass all checks before it is returned:
+
+```python
+# Check A — knowledge_version must match the request version
+# Check B — entry must not be past its `expiry` (TTL from semantic routing)
+# Check C — similarity must clear the risk-gated threshold
+risk_thresholds = {"low": 0.95, "medium": 0.90, "high": 0.85}
+```
+
+The Qdrant pre-search itself filters at `SIMILARITY_FLOOR = 0.90` (`qdrant_store.py`) and hard-filters on `tenant_id`, `provider`, and `model`. If **no `knowledge_version` is provided, the lookup returns `None` immediately** — the cache never guesses the data version.
 
 ### Instant Cache Invalidation (`knowledge_version`)
 Instead of deleting thousands of vectors when policies or business documents change, MemoLM uses a simple **`knowledge_version`** tag:
