@@ -10,7 +10,7 @@ import numpy as np
 from embedding.embedding import embed_text
 
 # The maximum number of past messages we want to remember
-MAX_MESSAGES_TO_KEEP = 5
+MAX_MESSAGES_TO_KEEP = 10
 
 # Our embedding model (BAAI/bge-small) crashes if we give it more than 512 tokens (~2000 letters).
 MAX_TOKENS_ALLOWED = 512

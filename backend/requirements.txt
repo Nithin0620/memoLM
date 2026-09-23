@@ -2,3 +2,6 @@ fastembed
 numpy
 qdrant-client
 python-dotenv
+fastapi
+uvicorn
+groq

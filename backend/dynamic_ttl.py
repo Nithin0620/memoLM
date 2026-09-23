@@ -27,7 +27,7 @@ TTL_BUCKETS: Dict[int, Dict[str, List[str]]] = {
             "my medical", "diagnosis", "my lawyer", "court case", "lawsuit",
             "bankruptcy", "tax filing", "password", "otp", "credit card",
             "bank account", "social security", "loan approval", "private",
-            "confidential", "my condition",
+            "confidential", "my condition", "now",
         ],
     },
     180: {

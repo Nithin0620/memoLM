@@ -51,8 +51,10 @@ COLLECTION_NAME  = "memolm_cache"
 VECTOR_SIZE      = 384          # matches BAAI/bge-small-en-v1.5
 DEFAULT_TTL      = 600          # fallback when semantic TTL routing is unavailable
 
-# Minimum cosine similarity to even consider a candidate
-SIMILARITY_FLOOR = 0.82
+# Minimum cosine similarity to even pass Qdrant's pre-filter.
+# Raised to 0.92 to cut false positives before they even reach the Safety Gate.
+# (e.g. "cancellation policy for flights" vs "cancellation policy for hotels" = ~0.91 → correctly rejected)
+SIMILARITY_FLOOR = 0.90
 
 _client: Optional[QdrantClient] = None
 
@@ -156,6 +158,11 @@ def fetch_from_cache(
     Passes every candidate through the Safety Gate.
     Returns the cached payload dict on a SAFE HIT, or None on a miss/rejection.
     """
+    # If no knowledge_version was provided, skip the cache entirely.
+    # We never want to serve a cached answer when we don't know what version the data is.
+    if version is None:
+        return None
+
     current_query = messages[-1]["content"] if isinstance(messages[-1], dict) else messages[-1]
     prior_messages = [
         (m["content"] if isinstance(m, dict) else m) for m in messages[:-1]
@@ -207,10 +214,11 @@ def fetch_from_cache(
         return None
 
     # Check C: Risk-based similarity threshold
-    #   low  risk → requires high similarity (≥ 0.90)
-    #   high risk → accepts lower similarity (≥ 0.82, already filtered above)
-    risk_thresholds = {"low": 0.90, "medium": 0.85, "high": 0.82}
-    required_score  = risk_thresholds.get((risk or "low").lower(), 0.90)
+    # The Safety Gate's final similarity check. Even after passing SIMILARITY_FLOOR (0.92),
+    # "low" risk requires 0.95 — a very strict match.
+    # This is the last line of defense against false positive cache hits.
+    risk_thresholds = {"low": 0.95, "medium": 0.90, "high": 0.85}
+    required_score  = risk_thresholds.get((risk or "low").lower(), 0.95)
     if score < required_score:
         print(f"[Safety Gate] REJECTED — score {score:.3f} < required {required_score} "
               f"for risk='{risk}'")
