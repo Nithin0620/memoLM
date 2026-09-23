@@ -63,7 +63,7 @@ def get_qdrant() -> QdrantClient:
     if _client is None:
         _client = QdrantClient(
             url=QDRANT_URL,
-            api_key=QDRANT_API_KEY or None,
+            api_key=QDRANT_API_KEY,
         )
     return _client
 
