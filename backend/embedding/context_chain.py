@@ -1,90 +1,99 @@
 """
-Compounding context chain (cap-at-5 rolling window).
+Context Chaining (Memory Stitching)
 
-Solves the Single-Query Context Problem: the API only sends the present user
-query, so the server builds the "recent context" itself from a rolling list of
-the last <= CONTEXT_CAP user texts. On every turn the gateway:
-
-    1. reads  memolm:session:{session_id}:messages  (Redis list of last <=5 texts)
-    2. appends the present query and trims back to CONTEXT_CAP (LTRIM)
-    3. calls embed_with_context(present_query, stored_texts) -> vector
-    4. stores the SAME stitched tail in the Qdrant point payload on write-back,
-       so a repeated topic-trajectory embeds identically and a topic switch
-       embeds differently -> safe MISS -> route to the -> LLM.
+This file solves the "Pronoun Problem". 
+If a user says "What is the price of this?", the AI needs to know if "this" is a car or a laptop.
+We fix this by combining their current question with their past few messages into one string.
 """
 
 import numpy as np
-
 from embedding.embedding import embed_text
 
-CONTEXT_CAP = 5
-EMBED_MAX_TOKENS = 512
-SESSION_KEY_PREFIX = "memolm:session:{}:messages"
+# The maximum number of past messages we want to remember
+MAX_MESSAGES_TO_KEEP = 5
+
+# Our embedding model (BAAI/bge-small) crashes if we give it more than 512 tokens (~2000 letters).
+MAX_TOKENS_ALLOWED = 512
 
 
-def session_key(session_id: str) -> str:
-    """Redis key that holds the rolling list of the last <= CONTEXT_CAP texts."""
-    return SESSION_KEY_PREFIX.format(session_id)
+def estimate_tokens(text):
+    """
+    A quick math trick to guess token count: 1 token is roughly 4 characters.
+    """
+    token_guess = len(text) // 4
+    
+    # Make sure we never return 0, even for very short words like "Hi"
+    if token_guess < 1:
+        return 1
+        
+    return token_guess
 
 
-def _estimate_tokens(text: str) -> int:
-    # Rough heuristic: byte-pair tokenizers average ~4 chars/token.
-    return max(1, len(text) // 4)
+def build_context_string(current_query, past_messages):
+    """
+    Takes the past messages and the new question, and stitches them into one big paragraph.
+    Safely drops old messages if the paragraph gets too long for the AI to read.
+    """
+    
+    # 1. Create a fresh list containing all past messages PLUS the new question at the end
+    all_messages = []
+    for msg in past_messages:
+        all_messages.append(msg)
+    all_messages.append(current_query)
+    
+    # 2. Only keep the most recent messages (e.g., the last 5)
+    # The [-MAX:] syntax slices the list to only grab items from the end
+    recent_messages = all_messages[-MAX_MESSAGES_TO_KEEP:]
+    
+    # 3. Protect the AI: Keep dropping the oldest message if the total text is too huge
+    while True:
+        # Join the messages together with a period and space
+        stitched_text = ". ".join(recent_messages)
+        
+        # Check if it fits within our 512 token limit
+        if estimate_tokens(stitched_text) <= MAX_TOKENS_ALLOWED:
+            break # It fits safely! Stop the loop.
+            
+        # We also stop if there is only 1 message left (the current query). We must keep it!
+        if len(recent_messages) == 1:
+            break
+            
+        # If the text is too big, remove the oldest message (at position 0) and try again
+        recent_messages.pop(0)
+        
+    return stitched_text
 
 
-def _rolling_turns(current_query: str, recent_messages: list, cap: int = CONTEXT_CAP) -> list:
-    """Roll the window: (stored texts + current query), keep last `cap`, then
-    drop oldest turns until the stitched text fits EMBED_MAX_TOKENS."""
-    turns = (list(recent_messages) + [current_query])[-cap:]
-    while _estimate_tokens(". ".join(turns)) > EMBED_MAX_TOKENS and len(turns) > 1:
-        turns.pop(0)
-    return turns
-
-
-def build_context_text(current_query: str, recent_messages: list, cap: int = CONTEXT_CAP) -> str:
-    """Stitched embedding input for the current query using rolling context."""
-    return ". ".join(_rolling_turns(current_query, recent_messages, cap))
-
-
-def embed_with_context(current_query: str, recent_messages: list, cap: int = CONTEXT_CAP) -> np.ndarray:
-    """Embed current_query + its rolling context as ONE vector."""
-    return embed_text(build_context_text(current_query, recent_messages, cap))
-
-
-def payload_fields_for(current_query: str, recent_messages: list, cap: int = CONTEXT_CAP) -> dict:
-    """Qdrant point payload fields to store on write-back, so the next turn can
-    rebuild the exact same stitched tail and future repeats embed identically."""
-    turns = _rolling_turns(current_query, recent_messages, cap)
-    return {
-        "context_queries": turns,
-        "context_text": ". ".join(turns),
-        "chain_depth": len(turns),
-    }
+def embed_with_context(current_query, past_messages):
+    """
+    This is the main function called by Qdrant.
+    It builds the safe, combined string, and turns it into a math vector.
+    """
+    # Get the big stitched paragraph
+    combined_text = build_context_string(current_query, past_messages)
+    
+    # Convert it to a vector
+    vector = embed_text(combined_text)
+    
+    return vector
 
 
 if __name__ == "__main__":
-    # Part 1 - Pronoun walkthrough: identical query, different rolling context
-    v_car = embed_with_context("What is the price?", ["I like the Toyota Camry."])
-    v_laptop = embed_with_context("What is the price?", ["I like the MacBook Pro."])
-    sim = float(np.dot(v_car, v_laptop) / (np.linalg.norm(v_car) * np.linalg.norm(v_laptop) + 1e-9))
-
-    print("PRONOUN WALKTHROUGH")
-    print("  car   -> 'I like the Toyota Camry. What is the price?'")
-    print("  laptop-> 'I like the MacBook Pro. What is the price?'")
-    print(f"  similarity = {sim:.3f}  (should be < 1.0 -> distinct vectors)")
-    print("  topic switch does NOT match the old cached car entry -> MISS -> LLM")
-
-    # Part 2 - 8-turn rolling window: oldest turns fall off after cap 5
-    print("\n8-TURN ROLLING WINDOW (cap = 5)")
-    stored = []  # what memolm:session:{sid}:messages holds (last <=5 texts)
-    for i in range(1, 9):
-        query = f"user question {i}"
-        text = build_context_text(query, stored)
-        stored = _rolling_turns(query, stored)
-        print(f"  turn {i}: len={len(stored)} embedding={' '.join(text.split())[:40]:40s} ...")
-
-    # Part 3 - 512-token guard: oversized old context gets dropped, query survives
-    print("\n512-TOKEN GUARD")
-    huge_old_turn = "A very long fact repeated over and over. " * 200
-    guarded = build_context_text("short query", [huge_old_turn])
-    print(f"  stitched = {guarded!r} (old 900-token turn dropped, current query kept)")
+    # --- PROOF IT WORKS ---
+    
+    car_history = ["I like the Toyota Camry."]
+    laptop_history = ["I like the MacBook Pro."]
+    new_question = "What is the price of this?"
+    
+    # Generate vectors for both
+    vector_car = embed_with_context(new_question, car_history)
+    vector_laptop = embed_with_context(new_question, laptop_history)
+    
+    # Calculate similarity
+    similarity = float(np.dot(vector_car, vector_laptop) / (np.linalg.norm(vector_car) * np.linalg.norm(vector_laptop)))
+    
+    print("--- Pronoun Problem Test ---")
+    print(f"Car Question Vector    -> 'I like the Toyota Camry. What is the price of this?'")
+    print(f"Laptop Question Vector -> 'I like the MacBook Pro. What is the price of this?'")
+    print(f"Similarity Score: {similarity:.3f}")
+    print("Because the score is not 1.0, Qdrant knows they are different topics!")

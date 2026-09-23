@@ -1,6 +1,6 @@
 # MemoLM Backend (Core Engine & Gateway)
 
-FastAPI async gateway with Redis exact cache, Qdrant semantic search, and the Safety Gate engine.
+FastAPI async gateway with Qdrant semantic cache (single store) and the Safety Gate engine.
 
 
 
@@ -48,30 +48,43 @@ The `embedding/` package wraps the `BAAI/bge-small-en-v1.5` model so the TTL rou
   - `get_model()` — loads the model the first time it's needed and reuses it forever after (simple `_model` cache, no magic).
   - `embed(texts)` — embeds a list of texts in one batch and converts the results to `numpy` arrays.
   - `embed_text(text)` — convenience wrapper: pass one string, get one vector back.
-  - `embed_messages_with_context(messages)` — request-level stitcher: takes a full `messages` array, slices the last 5, stitches, embeds.
-- `embedding/context_chain.py` — server-side rolling context (Single-Query Context Problem):
-  - `session_key(session_id)` — the Redis list key `memolm:session:{sid}:messages`.
-  - `build_context_text(current_query, recent_messages)` — appends the present query to the stored texts, keeps the last 5, drops oldest turns while estimated tokens exceed 512 (bge-small's window), then stitches with `". "`.
+- `embedding/context_chain.py` — rolling-context stitching (Pronoun Problem):
+  - `build_context_text(current_query, recent_messages)` — appends the present query to the prior turns, keeps the last `CONTEXT_CAP` (5), drops oldest turns while estimated tokens exceed 512 (bge-small's window), then stitches with `". "`.
   - `embed_with_context(current_query, recent_messages)` — embeds the stitched context + query as **one vector**.
-  - `payload_fields_for(current_query, recent_messages)` — the `context_queries` / `context_text` / `chain_depth` fields to store in the Qdrant point on write-back.
 
-The package intentionally has **no `__init__.py`** (a namespace package) — imports are fully explicit:
+Imports are fully explicit:
 
 ```python
-from embedding.embedding import embed, embed_text, embed_messages_with_context
-from embedding.context_chain import build_context_text, embed_with_context, payload_fields_for
+from embedding.embedding import embed, embed_text
+from embedding.context_chain import build_context_text, embed_with_context
 ```
 
 All runs fully offline after the first model download — no API key, no per-call cost.
 
-### Context flow (API sends only the present query)
+### Context flow (context comes from the incoming `messages` array)
 
 ```
-Redis  memolm:session:{sid}:messages = ["I like the Camry", "what is the price", ...]
-  -> append present query, LTRIM to 5
-  -> embed_with_context(query, stored_texts)   # one stitched, embedded vector
+Gateway receives full OpenAI-style messages list
+  -> current_query = last message, prior = earlier messages
+  -> embed_with_context(query, prior)        # one stitched, embedded vector
   -> Qdrant search with that vector
-  -> on write-back store payload_fields_for(...) so repeats embed identically
+  -> on write-back store the answer + safety metadata as a point
 ```
 
-    
+## Database Store (`database/qdrant_store.py`)
+
+MemoLM uses **Qdrant** as its unified vector and cache store. Every cached response is saved as a Qdrant Point containing:
+- **Vector**: 384-dimensional dense embedding of the context-stitched conversation.
+- **Payload**: Full metadata including `tenant_id`, `provider`, `model`, `knowledge_version`, `created_at`, `expiry`, and `response`.
+
+### Instant Cache Invalidation (`knowledge_version`)
+Instead of deleting thousands of vectors when policies or business documents change, MemoLM uses a simple **`knowledge_version`** tag:
+
+1. **Tag on Save**: When saving to Qdrant, the point payload records `"knowledge_version": version` (e.g., `"v1"`).
+2. **Verify on Fetch (Safety Gate)**: When querying, the Safety Gate compares the cached version with the incoming version:
+   ```python
+   cached_version = payload.get("knowledge_version", "")
+   if cached_version != request_version:
+       return None  # Instant Cache Miss -> Safely routes to LLM
+   ```
+3. **Instant Global Cache Busting**: Bumping the company's knowledge version (e.g., from `v1` to `v2`) instantly invalidates all outdated answers with **zero deletion latency** and **zero downtime**.

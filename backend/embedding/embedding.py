@@ -1,76 +1,67 @@
+"""
+Embedding Generator
+
+This file is responsible for taking normal text (like "Hello world") 
+and turning it into a mathematical array of numbers (a Vector) that Qdrant can understand.
+"""
+
 import numpy as np
 from fastembed import TextEmbedding
 
+# The specific AI model we are using to convert text to math
 MODEL_NAME = "BAAI/bge-small-en-v1.5"
+
+# This model always turns a sentence into a list of exactly 384 numbers
+EMBEDDING_SIZE = 384
+
+# We store the loaded model here so we only have to load it once (saves time and memory)
 _model = None
 
+
 def get_model():
-    """Loads the AI embedding model into memory only once (Singleton pattern)"""
+    """
+    Loads the AI embedding model into memory.
+    If it is already loaded, it just returns it immediately.
+    """
     global _model
     if _model is None:
         _model = TextEmbedding(model_name=MODEL_NAME)
     return _model
 
-def embed(texts: list) -> list:
-    # Takes a list of strings and converts them all into math vectors
+
+def embed(texts):
+    """
+    Takes a list of sentences and turns every single one into a math vector.
+    """
     model = get_model()
-    embeddings = []
+    
+    # We will store our finished math vectors here
+    finished_vectors = []
+    
+    # Convert the sentences into vectors one by one
     for vector in model.embed(list(texts)):
-        embeddings.append(np.asarray(vector))
-    return embeddings
-
-def embed_text(text: str) -> np.ndarray:
-    # """Helper function to convert just a single string into a vector"""
-    return embed([text])[0]
-
-def embed_messages_with_context(messages: list) -> np.ndarray:
-    """
-    Takes the full conversation history and stitches it together BEFORE converting to a vector.
-    This prevents Semantic Cache from confusing "tell me the price of this" (car) 
-    with "tell me the price of this" (laptop). 
-
-    """
-    # 1. If there is only one message, just embed it normally
-    if len(messages) == 1:
-        # Handle both raw strings and dictionaries
-        if isinstance(messages[0], dict):
-            return embed_text(messages[0].get("content", ""))
-        return embed_text(messages[0])
+        # We wrap it in np.asarray so Qdrant and math functions can read it properly
+        finished_vectors.append(np.asarray(vector))
         
-    # 2. Grab the last 5 messages so we have recent context, but not too much noise
-    recent_messages = messages[-5:]
-    
-    stitched_text = ""
-    for msg in recent_messages:
-        # We check if it's a dict or just a plain string
-        if isinstance(msg, dict):
-            role = msg.get("role", "user")
-            content = msg.get("content", "")
-            stitched_text += f"{role}: {content}. "
-        else:
-            stitched_text += f"{msg}. "
-            
-    # Remove any extra spaces at the end
-    stitched_text = stitched_text.strip()
-    
-    # 3. Convert this highly contextual paragraph into a single vector!
-    return embed_text(stitched_text)
+    return finished_vectors
+
+
+def embed_text(text):
+    """
+    Takes just ONE single sentence and turns it into a math vector.
+    """
+    # We put our 1 sentence in a list, send it to embed(), and then grab the 1st result out
+    results = embed([text])
+    return results[0]
+
 
 if __name__ == "__main__":
-    car_history = [
-        {"role": "user", "content": "I like the Toyota Camry."},
-        {"role": "user", "content": "What is the price of this?"}
-    ]
+    # --- PROOF IT WORKS ---
     
-    laptop_history = [
-        {"role": "user", "content": "I like the MacBook Pro."},
-        {"role": "user", "content": "What is the price of this?"}
-    ]
+    sample_text = "What is the price of this?"
+    vector = embed_text(sample_text)
     
-    vector_car = embed_messages_with_context(car_history)
-    vector_laptop = embed_messages_with_context(laptop_history)
-    
-    # Calculate similarity to prove they are mathematically different!
-    similarity = np.dot(vector_car, vector_laptop) / (np.linalg.norm(vector_car) * np.linalg.norm(vector_laptop))
-    print(f"Similarity between Car question and Laptop question: {similarity:.3f}")
-    print("Because it is not 1.0, Qdrant will correctly know they are different!")
+    print("--- Embedding Test ---")
+    print(f"Model used: {MODEL_NAME}")
+    print(f"Total numbers in the vector: {len(vector)} (We expect {EMBEDDING_SIZE})")
+    print(f"The first 3 numbers of the math vector: {vector[:3]}")
