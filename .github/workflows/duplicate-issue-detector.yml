@@ -1,0 +1,23 @@
+name: Duplicate Issue Detector
+
+on:
+  issues:
+    types: [opened]
+
+jobs:
+  detect-duplicates:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Run Duplicate Issue Detector
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_EVENT_PATH: ${{ github.event_path }}
+        run: |
+          python .github/scripts/duplicate_detector.py

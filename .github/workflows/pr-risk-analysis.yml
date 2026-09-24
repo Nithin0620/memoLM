@@ -1,0 +1,24 @@
+name: PR Risk Analysis
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+jobs:
+  risk-analysis:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Run PR Risk Analysis
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_EVENT_PATH: ${{ github.event_path }}
+        run: |
+          python .github/scripts/pr_risk_analysis.py
