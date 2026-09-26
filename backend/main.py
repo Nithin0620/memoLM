@@ -1,4 +1,6 @@
 import json
+import os
+import sys
 import time
 from typing import AsyncGenerator
 from fastapi import FastAPI, Request
@@ -9,9 +11,28 @@ from dotenv import load_dotenv
 import database.qdrant_store as cache
 from dynamic_ttl import get_semantic_ttl
 
+# Windows consoles default to cp1252 and cannot encode the Unicode used in the
+# log lines below; a failed print would surface as a 500 on a healthy request.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
+
 load_dotenv()
 
+# Upstream model. Configurable because Groq model access is per-API-key: a key
+# without access to the configured model fails with a 404 model_not_found.
+# Verify yours with:  curl https://api.groq.com/openai/v1/models -H "Authorization: Bearer $GROQ_API_KEY"
+DEFAULT_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")
+
 app = FastAPI(title="MemoLM Gateway", version="1.0")
+
+
+@app.on_event("startup")
+async def initialize_cache() -> None:
+    cache.ensure_collection()
+
 
 # Initialize the Groq client (our fallback LLM)
 groq_client = AsyncGroq()
@@ -40,7 +61,7 @@ async def stream_cached_response(cached_text: str) -> AsyncGenerator[str, None]:
     yield "data: [DONE]\n\n"
 
 
-@app.post("/v1/chat/completions")
+@app.post("/openai/v1/chat/completions")
 async def chat_completions(request: Request):
     """
     Drop-in replacement for OpenAI/Groq API.
@@ -49,7 +70,7 @@ async def chat_completions(request: Request):
     body = await request.json()
     
     messages = body.get("messages", [])
-    model = body.get("model", "llama-3.3-70b-versatile")
+    model = body.get("model") or DEFAULT_MODEL
     stream = body.get("stream", False)
 
     # We keep TWO versions of the message history:
@@ -125,10 +146,21 @@ async def chat_completions(request: Request):
     if not stream:
         # NON-STREAMING FALLBACK
         # full_messages → Groq needs the entire history to give a correct, contextual answer
-        chat_completion = await groq_client.chat.completions.create(
-            messages=full_messages,
-            model=model,
-        )
+        try:
+            chat_completion = await groq_client.chat.completions.create(
+                messages=full_messages,
+                model=model,
+            )
+        except Exception as exc:
+            # An upstream failure (bad model name, revoked key, rate limit) must
+            # not surface as an unhandled ASGI traceback. Cache stays valid, so
+            # the next request can still be served from it.
+            print(f"[Groq] UPSTREAM ERROR ({type(exc).__name__}): {exc}")
+            return JSONResponse(
+                status_code=502,
+                content={"error": {"message": f"Upstream provider error: {exc}", "type": "upstream_error"}},
+            )
+
         llm_answer = chat_completion.choices[0].message.content
 
         if ttl > 0:
@@ -146,11 +178,20 @@ async def chat_completions(request: Request):
     # -----------------------------------------------------------------------
     async def stream_from_llm():
         # full_messages → Groq needs the entire history to give a correct, contextual answer
-        chat_stream = await groq_client.chat.completions.create(
-            messages=full_messages,
-            model=model,
-            stream=True,
-        )
+        try:
+            chat_stream = await groq_client.chat.completions.create(
+                messages=full_messages,
+                model=model,
+                stream=True,
+            )
+        except Exception as exc:
+            # The response has already started, so the status code is locked in.
+            # Emit a terminal error frame the client can detect, then close cleanly
+            # instead of tearing down the ASGI task with a traceback.
+            print(f"[Groq] UPSTREAM ERROR ({type(exc).__name__}): {exc}")
+            yield f"data: {json.dumps({'error': {'message': f'Upstream provider error: {exc}', 'type': 'upstream_error'}})}\n\n"
+            yield "data: [DONE]\n\n"
+            return
 
         accumulated_answer = ""
 

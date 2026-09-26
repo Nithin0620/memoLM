@@ -20,9 +20,19 @@ Public API
 """
 
 import os
+import sys
 import time
 import uuid
 from typing import Optional
+
+# These modules log with Unicode (≈ → ─ ⚡ ❌ 🟢). Windows consoles default to
+# cp1252, which raises UnicodeEncodeError and turns a cache HIT into a 500.
+# errors="replace" guarantees logging can never break a request again.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
 
 import numpy as np
 from dotenv import load_dotenv
@@ -32,6 +42,7 @@ from qdrant_client.models import (
     FieldCondition,
     Filter,
     MatchValue,
+    PayloadSchemaType,
     PointStruct,
     VectorParams,
 )
@@ -50,6 +61,20 @@ QDRANT_API_KEY   = os.getenv("QDRANT_API_KEY", "")
 COLLECTION_NAME  = "memolm_cache"
 VECTOR_SIZE      = 384          # matches BAAI/bge-small-en-v1.5
 DEFAULT_TTL      = 600          # fallback when semantic TTL routing is unavailable
+
+# Payload fields that MUST be indexed before Qdrant will accept a filter on
+# them. Without these, query_points() fails with:
+#   400 "Index required but not found for \"tenant_id\" of type [keyword]"
+# The first three are the hard pre-filter; the rest are Safety Gate inputs and
+# are indexed so they can be pushed into the filter later without a reindex.
+INDEXED_FIELDS = (
+    "tenant_id",
+    "provider",
+    "model",
+    "knowledge_version",
+    "prompt_version",
+    "risk",
+)
 
 # Minimum cosine similarity to even pass Qdrant's pre-filter.
 # Raised to 0.92 to cut false positives before they even reach the Safety Gate.
@@ -71,7 +96,13 @@ def get_qdrant() -> QdrantClient:
 
 
 def ensure_collection() -> None:
-    """Create the Qdrant collection if it does not already exist."""
+    """
+    Create the Qdrant collection (vectors + payload indexes) if it does not exist.
+
+    Payload indexes are NOT optional: Qdrant rejects any filtered search whose
+    filter key has no index, so a collection created without them 500s on the
+    very first cache lookup. This function is therefore called on app startup.
+    """
     client = get_qdrant()
     existing = [c.name for c in client.get_collections().collections]
     if COLLECTION_NAME not in existing:
@@ -82,6 +113,15 @@ def ensure_collection() -> None:
         print(f"[Qdrant] Created collection '{COLLECTION_NAME}'")
     else:
         print(f"[Qdrant] Collection '{COLLECTION_NAME}' already exists")
+
+    # Idempotent: Qdrant returns success if the index already exists.
+    for field in INDEXED_FIELDS:
+        client.create_payload_index(
+            collection_name=COLLECTION_NAME,
+            field_name=field,
+            field_schema=PayloadSchemaType.KEYWORD,
+        )
+    print(f"[Qdrant] Payload indexes ready: {', '.join(INDEXED_FIELDS)}")
 
 
 # ---------------------------------------------------------------------------
@@ -169,9 +209,9 @@ def fetch_from_cache(
     ]
     query_vector = embed_with_context(current_query, prior_messages)
 
-    results = get_qdrant().search(
+    response = get_qdrant().query_points(
         collection_name=COLLECTION_NAME,
-        query_vector=query_vector.tolist(),
+        query=query_vector.tolist(),
         limit=1,
         score_threshold=score_threshold,
         query_filter=Filter(
@@ -182,6 +222,7 @@ def fetch_from_cache(
             ]
         ),
     )
+    results = response.points
 
     if not results:
         print(f"[Qdrant] MISS — no candidate above score_threshold={score_threshold}")

@@ -8,11 +8,6 @@ FastAPI async gateway with Qdrant semantic cache (single store) and the Safety G
 
 The gateway keeps **two views of the same conversation**:
 
-```python
-full_messages  = messages          # entire history  → sent to Groq (correct, contextual answers)
-cache_messages = messages[-10:]    # last 10 turns   → sent to Qdrant (cheap search vector)
-```
-
 - **Cache lookup** embeds only `cache_messages` — the context chain then rolls it down to the last 5 turns, keeping embeddings fast without diluting the vector.
 - **Cache HIT** serves the stored answer instantly. With `stream=True` it re-emits the cached text as fake SSE chunks (same typing effect, ~20 ms); otherwise it returns a `chat.completion`-shaped JSON with the verdict under `memolm_stats`.
 - **Cache MISS** forwards `full_messages` to Groq (streaming or not), pipes the response back to the client, then writes it to the cache via `save_to_cache` — but only when `dynamic_ttl` resolved `ttl > 0`.
@@ -24,7 +19,6 @@ MemoLM headers consumed by the gateway:
 | `x-memolm-tenant` | optional | Tenant isolation (default `"default-tenant"`). |
 | `x-memolm-version` | **yes** | `knowledge_version` for the Safety Gate. If missing, the cache is skipped entirely and the request always goes to the LLM — **there is no silent default**. |
 
-`risk_level` is hardcoded to `"low"` in the gateway, so every hit must clear the Safety Gate's strict `low` threshold of similarity ≥ **0.95**.
 
 ## Test client (`test_client.py`)
 
