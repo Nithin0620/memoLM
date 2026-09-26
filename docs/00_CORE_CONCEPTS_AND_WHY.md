@@ -65,3 +65,7 @@ If **any condition fails**, MemoLM rejects the candidate, logs the exact rejecti
 | **API Cost** | `$0.003 – $0.05 per request` | **$0.0000** |
 | **Rate Limit Impact** | Consumes provider TPM/RPM quota | 0 quota consumed |
 | **Answer Correctness** | Model-dependent | **Guaranteed against policy drift** |
+
+## The competition
+
+![alt text](image.png)
