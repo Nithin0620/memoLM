@@ -59,7 +59,7 @@ QDRANT_URL       = os.getenv("QDRANT_URL", "http://localhost:6333")
 QDRANT_API_KEY   = os.getenv("QDRANT_API_KEY", "")
 
 COLLECTION_NAME  = "memolm_cache"
-VECTOR_SIZE      = 384          # matches BAAI/bge-small-en-v1.5
+VECTOR_SIZE      = 768          # matches BAAI/bge-base-en-v1.5
 DEFAULT_TTL      = 600          # fallback when semantic TTL routing is unavailable
 
 # Payload fields that MUST be indexed before Qdrant will accept a filter on

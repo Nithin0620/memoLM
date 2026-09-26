@@ -9,10 +9,10 @@ import numpy as np
 from fastembed import TextEmbedding
 
 # The specific AI model we are using to convert text to math
-MODEL_NAME = "BAAI/bge-small-en-v1.5"
+MODEL_NAME = "BAAI/bge-base-en-v1.5"
 
 # This model always turns a sentence into a list of exactly 384 numbers
-EMBEDDING_SIZE = 384
+EMBEDDING_SIZE = 768
 
 # We store the loaded model here so we only have to load it once (saves time and memory)
 _model = None
