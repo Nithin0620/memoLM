@@ -171,12 +171,12 @@ Every candidate found in Qdrant must pass all checks before it is returned:
 # Check A — knowledge_version must match the request version
 # Check B — entry must not be past its `expiry` (TTL from semantic routing)
 # Check C — similarity must clear the risk-gated threshold
-risk_thresholds = {"low": 0.90, "medium": 0.88, "high": 0.85}
+risk_thresholds = {"low": 0.90, "medium": 0.85, "high": 0.80}
 ```
 
-The Qdrant pre-search itself filters at `SIMILARITY_FLOOR = 0.80` (`qdrant_store.py`) and hard-filters on `tenant_id`, `provider`, and `model`. If **no `knowledge_version` is provided, the lookup returns `None` immediately** — the cache never guesses the data version.
+The Qdrant pre-search itself filters at `SIMILARITY_FLOOR = 0.85` (`qdrant_store.py`) and hard-filters on `tenant_id`, `provider`, and `model`. If **no `knowledge_version` is provided, the lookup returns `None` immediately** — the cache never guesses the data version.
 
-Note that the risk bars are **inverted relative to intuition**: `high` risk has the *lowest* bar (0.85). That is deliberate — high-risk answers are usually routed to a `0` TTL by `dynamic_ttl.py` and expire immediately, so the threshold rarely matters for them, whereas low-risk answers are the ones that need to actually hit.
+Note that the risk bars are **inverted relative to intuition**: `high` risk has the *lowest* bar (0.80). That is deliberate — high-risk answers are usually routed to a `0` TTL by `dynamic_ttl.py` and expire immediately, so the threshold rarely matters for them, whereas low-risk answers are the ones that need to actually hit.
 
 ### Operational notes
 

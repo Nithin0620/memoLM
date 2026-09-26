@@ -76,10 +76,8 @@ INDEXED_FIELDS = (
     "risk",
 )
 
-# Minimum cosine similarity to even pass Qdrant's pre-filter.
-# Raised to 0.92 to cut false positives before they even reach the Safety Gate.
-# (e.g. "cancellation policy for flights" vs "cancellation policy for hotels" = ~0.91 → correctly rejected)
-SIMILARITY_FLOOR = 0.90
+# Minimum cosine similarity to pass Qdrant's pre-filter.
+SIMILARITY_FLOOR = 0.85
 
 _client: Optional[QdrantClient] = None
 
@@ -255,11 +253,11 @@ def fetch_from_cache(
         return None
 
     # Check C: Risk-based similarity threshold
-    # The Safety Gate's final similarity check. Even after passing SIMILARITY_FLOOR (0.92),
-    # "low" risk requires 0.95 — a very strict match.
+    # The Safety Gate's final similarity check. Even after passing SIMILARITY_FLOOR,
+    # "low" risk requires 0.90 — a strict match.
     # This is the last line of defense against false positive cache hits.
-    risk_thresholds = {"low": 0.95, "medium": 0.90, "high": 0.85}
-    required_score  = risk_thresholds.get((risk or "low").lower(), 0.95)
+    risk_thresholds = {"low": 0.90, "medium": 0.85, "high": 0.80}
+    required_score  = risk_thresholds.get((risk or "low").lower(), 0.90)
     if score < required_score:
         print(f"[Safety Gate] REJECTED — score {score:.3f} < required {required_score} "
               f"for risk='{risk}'")
