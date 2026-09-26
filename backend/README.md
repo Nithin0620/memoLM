@@ -4,18 +4,6 @@ FastAPI async gateway with Qdrant semantic cache (single store) and the Safety G
 
 ## API Gateway (`main.py`)
 
-`main.py` is the live FastAPI implementation of the OpenAI/Groq-compatible `POST /openai/v1/chat/completions` endpoint. It runs with `uvicorn` (`127.0.0.1:8000`, `--reload`) and uses **Groq (`openai/gpt-oss-20b`) as the upstream LLM**.
-
-The route carries the `/openai` prefix on purpose: the official Groq SDK appends `/chat/completions` itself, so pointing it at `base_url="http://127.0.0.1:8000"` resolves to the path above. A `base_url` of `.../v1` would land on `/v1/chat/completions`, which does not exist.
-
-The model is read from `GROQ_MODEL` (default `openai/gpt-oss-20b`) in both `main.py` and `chat.py`. Model access is **per-API-key** — check what your key can actually reach with:
-
-```bash
-curl https://api.groq.com/openai/v1/models -H "Authorization: Bearer $GROQ_API_KEY"
-```
-
-A model your key cannot reach returns an upstream `404`, which the gateway surfaces as a `502` (non-streaming) or an error frame before `data: [DONE]` (streaming).
-
 The gateway keeps **two views of the same conversation**:
 
 - **Cache lookup** embeds only `cache_messages` — the last 10 turns only. The context chain then trims further only if the stitched text would exceed the embedding model's 512-token window, keeping embeddings fast without diluting the vector.
@@ -28,7 +16,7 @@ MemoLM headers consumed by the gateway:
 | :-- | :-- | :-- |
 | `x-memolm-tenant` | optional | Tenant isolation (default `"default-tenant"`). |
 | `x-memolm-version` | **yes** | `knowledge_version` for the Safety Gate. If missing, the cache is skipped entirely and the request always goes to the LLM — **there is no silent default**. |
-| `x-memolm-risk` | not read yet | The gateway currently **hardcodes `risk="low"`** in `main.py`, so every request is scored against the strictest `0.95` bar. Wiring this header to the Safety Gate is a one-line change. |
+| `x-memolm-risk` | not read yet | The gateway currently **hardcodes `risk="low"`** in `main.py`, so every request is scored against the strictest `0.90` bar. Wiring this header to the Safety Gate is a one-line change. |
 
 
 ## Test client (`chat.py`)
@@ -57,7 +45,7 @@ Every subsequent question now carries `x-memolm-version: v13` while the cached p
 
 ## Dynamic TTL (Semantic Routing)
 
-`dynamic_ttl.py` decides how long a cached answer stays valid. It is a **hybrid router**: explicit keyword hits boost a TTL bucket deterministically (e.g. `"breaking"`, `"how to"`, `"password"`, `"now"`), and the embedding model (`BAAI/bge-small-en-v1.5`) routes paraphrases via cosine similarity against **8 anchor vectors per bucket**. A confidence floor plus a winner-margin gate makes ambiguous queries fall back to the default TTL instead of guessing.
+`dynamic_ttl.py` decides how long a cached answer stays valid. It is a **hybrid router**: explicit keyword hits boost a TTL bucket deterministically (e.g. `"breaking"`, `"how to"`, `"password"`, `"now"`), and the embedding model (`BAAI/bge-base-en-v1.5`) routes paraphrases via cosine similarity against **8 anchor vectors per bucket**. A confidence floor plus a winner-margin gate makes ambiguous queries fall back to the default TTL instead of guessing.
 
 `get_semantic_ttl` can also force *never cache* for high-risk requests via `risk_level="high"`.
 
@@ -89,18 +77,18 @@ get_semantic_ttl("call the provider", risk_level="high")            # -> 0  (nev
 
 A returned TTL of `0` means "never cache" — the Safety Gate treats every candidate as expired (`now > created_at + 0`), so these requests always route to the upstream LLM.
 
-The `0` bucket (medical, legal, financial-personal, credentials/security) catches critical queries that should not be cached at all. It also matches the bare keyword `"now"`, so "right now"-style current-moment phrasing (which goes stale the instant it's answered) is biased toward never-caching too. Anchor prompts and keywords are defined in `TTL_BUCKETS` (one `anchors` list and one `keywords` list per bucket) and are easy to tune.
+The `0` bucket (medical, legal, financial-personal, credentials/security) catches critical queries that should not be cached at all. It also matches the bare keyword `"now"`, so "right now"-style current-moment phrasing (which goes stale the instant it's answered) is biased toward never-caching too. Keyword matching is **whole-word**, not substring, so `"now"` no longer fires inside `"known"` / `"notebook"` / `"renew"`. Anchor prompts and keywords are defined in `TTL_BUCKETS` (one `anchors` list and one `keywords` list per bucket) and are easy to tune.
 
 ## Embedding (`embedding/` package)
 
-The `embedding/` package wraps the `BAAI/bge-small-en-v1.5` model so the TTL router and the Qdrant search pipeline share one model instance.
+The `embedding/` package wraps the `BAAI/bge-base-en-v1.5` model so the TTL router and the Qdrant search pipeline share one model instance. Upgraded from `bge-small-en-v1.5` (384-dim) because paraphrase hits clustered too tightly against the old thresholds — see [Switching the embedding model](#switching-the-embedding-model) below.
 
 - `embedding/embedding.py` — the model wrapper:
   - `get_model()` — loads the model the first time it's needed and reuses it forever after (simple `_model` cache, no magic).
   - `embed(texts)` — embeds a list of texts in one batch and converts the results to `numpy` arrays.
   - `embed_text(text)` — convenience wrapper: pass one string, get one vector back.
 - `embedding/context_chain.py` — rolling-context stitching (Pronoun Problem):
-  - `build_context_string(current_query, past_messages)` — appends the present query to the prior turns, keeps the last `MAX_MESSAGES_TO_KEEP` (10), then drops oldest turns while estimated tokens exceed `MAX_TOKENS_ALLOWED` (512, bge-small's window), stitching with `". "`. A single trailing message is never dropped, so the current query is always embedded.
+  - `build_context_string(current_query, past_messages)` — appends the present query to the prior turns, keeps the last `MAX_MESSAGES_TO_KEEP` (10), then drops oldest turns while estimated tokens exceed `MAX_TOKENS_ALLOWED` (512, bge-base's window), stitching with `". "`. A single trailing message is never dropped, so the current query is always embedded.
   - `embed_with_context(current_query, past_messages)` — embeds the stitched context + query as **one vector**. This is the function Qdrant calls on both read and write.
   - `estimate_tokens(text)` — a `len(text) // 4` heuristic (never returns 0), not a real tokenizer.
 
@@ -125,26 +113,55 @@ Gateway receives full OpenAI-style messages list
 
 ## Measured behaviour
 
-Real end-to-end timings against live Groq + Qdrant Cloud (`openai/gpt-oss-20b`), captured with `chat.py`:
+Real end-to-end timings against live Groq + Qdrant Cloud (`openai/gpt-oss-20b`, `bge-base-en-v1.5`), captured with `chat.py`:
 
 | Step | Request | Result | Wall time |
 | :-- | :-- | :-- | :-- |
-| 1 | cold ask, `x-memolm-version: v12` | LLM call, answer cached | **2612 ms** |
-| 2 | same question, same `v12` | `SAFE_CACHE_HIT` @ 1.000 | **289 ms** |
-| 3 | same question, bumped to `v13` | Safety Gate Check A rejects stale `v12`, fresh LLM call | **2053 ms** |
+| 1 | cold ask, fresh version | LLM call, answer cached | **2524 ms** |
+| 2 | same question, same version | `SAFE_CACHE_HIT` @ 1.0000 | **314 ms** |
+| 3 | same question, bumped version | Safety Gate Check A rejects stale point, fresh LLM call | **2437 ms** |
+| 4 | reworded question, same version | `LLM CALL` (paraphrase) — see note below | **2281 ms** |
 
 Step 2 → 3 is the important pair: the *only* difference is the version header, and it is enough to force a fresh LLM call. That is instant cache invalidation, demonstrated end to end.
 
-The cache HIT is ~9x faster than the LLM call, not the ~98x the architecture docs claim. Two honest caveats on that number:
+Step 4 is an honest limitation rather than a bug. A reworded-but-equivalent question ("How much does it set me back?" instead of "What is the price of this?") scores below the `0.90` low-risk bar, so it re-calls the LLM. That is the Safety Gate choosing correctness over hit rate: the same probe that rejected the paraphrase also had to separate it from a same-template decoy, and some of those overlap. See [Similarity distribution](#similarity-distribution-where-the-thresholds-came-from).
 
-- The gateway deliberately re-emits a HIT as fake SSE chunks with a `time.sleep(0.01)` between 15-character chunks to reproduce the typing effect. For a ~300-character answer that adds ~200 ms of the 289 ms. **The lookup itself is tens of milliseconds; the typing effect is the dominant cost.**
+The cache HIT is ~8x faster than the LLM call, not the ~98x the architecture docs claim. Two honest caveats on that number:
+
+- The gateway deliberately re-emits a HIT as fake SSE chunks with a `time.sleep(0.01)` between 15-character chunks to reproduce the typing effect. For a ~300-character answer that adds ~200 ms of the 314 ms. **The lookup itself is tens of milliseconds; the typing effect is the dominant cost.**
 - `latency_saved` in the response payload is currently a hardcoded estimate (`round(1.2 - 0.02, 2)`), not a measurement. Do not quote it as a real number on stage.
+
+### Switching the embedding model
+
+`MODEL_NAME` and `EMBEDDING_SIZE` live in `embedding/embedding.py`; `COLLECTION_NAME` and `VECTOR_SIZE` live in `database/qdrant_store.py`. **Qdrant cannot resize a collection's vectors**, so any dimension change requires a new collection name — that is exactly why the current one is called `memolm_cache_bge_base` and the old 384-dim `memolm_cache` is left in place rather than reused.
+
+`ensure_collection()` now asserts the existing collection's dimension against `VECTOR_SIZE` and fails loudly on a mismatch, so pointing the new model at the old collection is a startup error instead of silent garbage search results.
+
+**The collection name is tied to the model, and the model is tied to the thresholds.** Similarity scores are not comparable across embedding models, so switching models invalidates every threshold in the Safety Gate and every anchor score in `dynamic_ttl.py`. Re-measure before trusting them.
+
+### Similarity distribution (where the thresholds came from)
+
+The thresholds were re-derived from a measured score distribution instead of carried over from bge-small. A raw-score probe against bge-base (Safety Gate bypassed, single saved point):
+
+| Query | Score | Expected |
+| :-- | :-- | :-- |
+| exact repeat | 1.0000 | HIT |
+| reordered context | 0.9801 | HIT |
+| paraphrased topic | 0.8338 | HIT (misses the 0.90 bar) |
+| different product | 0.6479 | MISS |
+| different product, reworded | 0.5352 | MISS |
+
+A wider offline probe (multiple HIT/MISS pairs, no prefix) showed realistic paraphrases landing at **0.9530–1.0000** and decoys at **0.3516–0.6479**, with two outliers that overlap: the hardest paraphrase sat at `0.7921` and a same-template decoy (`password` vs `email`) at `0.8078`. No single threshold separates those two cases.
+
+`SIMILARITY_FLOOR` is therefore `0.80` — above the decoy cluster, below the paraphrase cluster — rather than the old `0.90`. **BGE's retrieval query prefix was tested and rejected**: it *lowered* the HIT/MISS separation gap (to −0.0556 from −0.0156), so no prefix is added for this symmetric design.
 
 ## Database Store (`database/qdrant_store.py`)
 
 MemoLM uses **Qdrant** as its unified vector and cache store. Every cached response is saved as a Qdrant Point containing:
-- **Vector**: 384-dimensional dense embedding of the context-stitched conversation.
+- **Vector**: 768-dimensional dense embedding of the context-stitched conversation (`bge-base-en-v1.5`).
 - **Payload**: Full metadata including `tenant_id`, `provider`, `model`, `knowledge_version`, `created_at`, `expiry`, and `response`.
+
+The current collection is `memolm_cache_bge_base`. Points written by the old bge-small build live in `memolm_cache` at 384 dimensions and are **not** readable by the current build — a cache is warmed per model, so re-run the questions you want cached after any model switch.
 
 ### Safety Gate checks (`fetch_from_cache`)
 
@@ -154,10 +171,12 @@ Every candidate found in Qdrant must pass all checks before it is returned:
 # Check A — knowledge_version must match the request version
 # Check B — entry must not be past its `expiry` (TTL from semantic routing)
 # Check C — similarity must clear the risk-gated threshold
-risk_thresholds = {"low": 0.95, "medium": 0.90, "high": 0.85}
+risk_thresholds = {"low": 0.90, "medium": 0.88, "high": 0.85}
 ```
 
-The Qdrant pre-search itself filters at `SIMILARITY_FLOOR = 0.90` (`qdrant_store.py`) and hard-filters on `tenant_id`, `provider`, and `model`. If **no `knowledge_version` is provided, the lookup returns `None` immediately** — the cache never guesses the data version.
+The Qdrant pre-search itself filters at `SIMILARITY_FLOOR = 0.80` (`qdrant_store.py`) and hard-filters on `tenant_id`, `provider`, and `model`. If **no `knowledge_version` is provided, the lookup returns `None` immediately** — the cache never guesses the data version.
+
+Note that the risk bars are **inverted relative to intuition**: `high` risk has the *lowest* bar (0.85). That is deliberate — high-risk answers are usually routed to a `0` TTL by `dynamic_ttl.py` and expire immediately, so the threshold rarely matters for them, whereas low-risk answers are the ones that need to actually hit.
 
 ### Operational notes
 
