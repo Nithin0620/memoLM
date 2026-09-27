@@ -1,0 +1,44 @@
+{
+  "name": "@memolm/sdk",
+  "version": "0.1.0",
+  "description": "Official TypeScript & JavaScript SDK for MemoLM - Safe Semantic Caching & Response Firewall for LLMs",
+  "main": "./dist/index.js",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "typecheck": "tsc --noEmit",
+    "example:basic": "tsx examples/basic-chat.ts",
+    "example:streaming": "tsx examples/streaming-chat.ts"
+  },
+  "keywords": [
+    "memolm",
+    "llm",
+    "cache",
+    "semantic-cache",
+    "openai",
+    "groq",
+    "gemini",
+    "ai-gateway"
+  ],
+  "author": "MemoLM Team",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "tsup": "^8.0.2",
+    "tsx": "^4.7.1",
+    "typescript": "^5.3.3"
+  }
+}
