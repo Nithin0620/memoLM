@@ -77,6 +77,8 @@ INDEXED_FIELDS = (
 )
 
 # Minimum cosine similarity to pass Qdrant's pre-filter.
+# Raised from 0.85 to 0.92 to stop near-miss entity matches (BMW vs Nano,
+# OS vs OSI) that slipped through the old bar.
 SIMILARITY_FLOOR = 0.85
 
 _client: Optional[QdrantClient] = None
@@ -123,6 +125,46 @@ def ensure_collection() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Core: message list -> context chain (user turns only)
+# ---------------------------------------------------------------------------
+def user_chain(messages: list) -> tuple:
+    """
+    Split an OpenAI-style `messages` array into (current_query, prior_messages)
+    for the embedding step. Public because `main.py` reuses it to pick the query
+    text that `dynamic_ttl` routes on.
+
+    Only `role == "user"` turns reach the vector. Assistant prose was the single
+    largest source of false cache hits: two unrelated questions asked in the same
+    conversation shared a byte-identical prefix of assistant text, and because the
+    old context chain was prefix-preserving that prefix grew with every turn.
+    Cosine then saturated toward 1.0 and the cache served the wrong answer — a
+    greeting from turn 2 was returned for a technical question at turn 3
+    (cosine 0.9371, over the Safety Gate). Measured after this filter: 0.7973,
+    a clean miss.
+
+    Content is kept only when it is a non-empty string. Multimodal part lists and
+    `content: None` (assistant messages carrying tool_calls) used to reach the
+    joiner in the context chain and raise TypeError, turning a healthy request into
+    a 500.
+
+    Returns (None, None) when no usable user turn exists; callers skip the cache.
+    """
+    texts = []
+    for m in messages or []:
+        if isinstance(m, dict):
+            if m.get("role") != "user":
+                continue
+            m = m.get("content")
+        if not isinstance(m, str) or not m.strip():
+            continue
+        texts.append(m)
+
+    if not texts:
+        return None, None
+    return texts[-1], texts[:-1]
+
+
+# ---------------------------------------------------------------------------
 # Core: Save a fresh LLM response into Qdrant
 # ---------------------------------------------------------------------------
 def save_to_cache(
@@ -142,10 +184,10 @@ def save_to_cache(
     a resolution of 0 (never-cache domains / high risk) skips storing.
     Returns the UUID of the stored point, or None when not stored.
     """
-    current_query = messages[-1]["content"] if isinstance(messages[-1], dict) else messages[-1]
-    prior_messages = [
-        (m["content"] if isinstance(m, dict) else m) for m in messages[:-1]
-    ]
+    current_query, prior_messages = user_chain(messages)
+    if current_query is None:
+        print("[Qdrant] SKIPPED — no usable user message to build a chain from")
+        return None
 
     if ttl is None:
         ttl = get_semantic_ttl(current_query, risk_level=risk)
@@ -201,10 +243,11 @@ def fetch_from_cache(
     if version is None:
         return None
 
-    current_query = messages[-1]["content"] if isinstance(messages[-1], dict) else messages[-1]
-    prior_messages = [
-        (m["content"] if isinstance(m, dict) else m) for m in messages[:-1]
-    ]
+    current_query, prior_messages = user_chain(messages)
+    if current_query is None:
+        print("[Qdrant] MISS — no usable user message to build a chain from")
+        return None
+
     query_vector = embed_with_context(current_query, prior_messages)
 
     response = get_qdrant().query_points(
@@ -253,11 +296,13 @@ def fetch_from_cache(
         return None
 
     # Check C: Risk-based similarity threshold
-    # The Safety Gate's final similarity check. Even after passing SIMILARITY_FLOOR,
-    # "low" risk requires 0.90 — a strict match.
+    # The Safety Gate's final similarity check, applied on top of SIMILARITY_FLOOR.
+    # `risk` grades how much harm a wrong answer would cause, so a HIGHER risk
+    # demands a STRICTER match. "low" is the default and the least demanding;
+    # "high" (medical/financial/legal) needs near-exact agreement.
     # This is the last line of defense against false positive cache hits.
-    risk_thresholds = {"low": 0.90, "medium": 0.85, "high": 0.80}
-    required_score  = risk_thresholds.get((risk or "low").lower(), 0.90)
+    risk_thresholds = {"low": 0.85, "medium": 0.90, "high": 0.95}
+    required_score  = risk_thresholds.get((risk or "low").lower(), 0.92)
     if score < required_score:
         print(f"[Safety Gate] REJECTED — score {score:.3f} < required {required_score} "
               f"for risk='{risk}'")

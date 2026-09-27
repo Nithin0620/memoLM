@@ -1,99 +1,94 @@
 """
-Context Chaining (Memory Stitching)
+Context Chaining (Weighted Vector Fusion)
 
-This file solves the "Pronoun Problem". 
-If a user says "What is the price of this?", the AI needs to know if "this" is a car or a laptop.
-We fix this by combining their current question with their past few messages into one string.
+The previous approach stitched the current question and every prior turn into one
+paragraph and embedded that single string. Flat concatenation is a poor
+aggregator: the longest text wins. Assistant prose is bulky and near-identical
+between turns, so it swamped the actual question and pushed cosine toward 1.0 for
+completely unrelated prompts.
+
+We now embed the current query and the last 1-2 user turns as SEPARATE vectors and
+blend them in vector space, weighted heavily toward the current query, then
+normalise to a unit vector for cosine distance.
 """
 
 import numpy as np
 from embedding.embedding import embed_text
 
-# The maximum number of past messages we want to remember
-MAX_MESSAGES_TO_KEEP = 10
+# The current question is the retrieval key, so it dominates the blend. The
+# context term exists only to break ties (e.g. "what is the price of this?").
+CURRENT_QUERY_WEIGHT = 0.80
+CONTEXT_WEIGHT = 0.20
 
-# Our embedding model (BAAI/bge-small) crashes if we give it more than 512 tokens (~2000 letters).
-MAX_TOKENS_ALLOWED = 512
-
-
-def estimate_tokens(text):
-    """
-    A quick math trick to guess token count: 1 token is roughly 4 characters.
-    """
-    token_guess = len(text) // 4
-    
-    # Make sure we never return 0, even for very short words like "Hi"
-    if token_guess < 1:
-        return 1
-        
-    return token_guess
-
-
-def build_context_string(current_query, past_messages):
-    """
-    Takes the past messages and the new question, and stitches them into one big paragraph.
-    Safely drops old messages if the paragraph gets too long for the AI to read.
-    """
-    
-    # 1. Create a fresh list containing all past messages PLUS the new question at the end
-    all_messages = []
-    for msg in past_messages:
-        all_messages.append(msg)
-    all_messages.append(current_query)
-    
-    # 2. Only keep the most recent messages (e.g., the last 5)
-    # The [-MAX:] syntax slices the list to only grab items from the end
-    recent_messages = all_messages[-MAX_MESSAGES_TO_KEEP:]
-    
-    # 3. Protect the AI: Keep dropping the oldest message if the total text is too huge
-    while True:
-        # Join the messages together with a period and space
-        stitched_text = ". ".join(recent_messages)
-        
-        # Check if it fits within our 512 token limit
-        if estimate_tokens(stitched_text) <= MAX_TOKENS_ALLOWED:
-            break # It fits safely! Stop the loop.
-            
-        # We also stop if there is only 1 message left (the current query). We must keep it!
-        if len(recent_messages) == 1:
-            break
-            
-        # If the text is too big, remove the oldest message (at position 0) and try again
-        recent_messages.pop(0)
-        
-    return stitched_text
+# How many prior user turns are worth fusing in. Deliberately small — each extra
+# turn dilutes the signal of the question being asked right now.
+MAX_CONTEXT_MESSAGES = 2
 
 
 def embed_with_context(current_query, past_messages):
     """
-    This is the main function called by Qdrant.
-    It builds the safe, combined string, and turns it into a math vector.
+    This is the main function called by Qdrant, on both read and write.
+
+    1. Filters to USER queries only (assistant responses are ignored).
+    2. Blends 80% current query + 20% recent user context in vector space.
+    3. Returns a unit-length vector so Qdrant's cosine distance is meaningful.
+
+    `past_messages` arrives already reduced to user turns by
+    `qdrant_store.user_chain`, but dicts are tolerated here too.
     """
-    # Get the big stitched paragraph
-    combined_text = build_context_string(current_query, past_messages)
-    
-    # Convert it to a vector
-    vector = embed_text(combined_text)
-    
-    return vector
+    # Embed the current query (primary signal)
+    current_vec = embed_text(current_query)
+
+    # Filter only user strings (ignore assistant responses)
+    user_history = []
+    for m in past_messages:
+        content = m["content"] if isinstance(m, dict) else m
+        role = m.get("role") if isinstance(m, dict) else "user"
+        if role == "user" and isinstance(content, str) and content != current_query:
+            user_history.append(content)
+
+    # No usable context — the query alone is the key
+    if not user_history:
+        return _unit(current_vec)
+
+    # Only take the immediate last 1-2 user questions
+    recent_context = " ".join(user_history[-MAX_CONTEXT_MESSAGES:])
+    context_vec = embed_text(recent_context)
+
+    # 80% current query weight + 20% context weight
+    fused_vec = (CURRENT_QUERY_WEIGHT * current_vec) + (CONTEXT_WEIGHT * context_vec)
+
+    return _unit(fused_vec)
+
+
+def _unit(vector):
+    """Normalise to unit length; pass through a zero vector untouched."""
+    norm = np.linalg.norm(vector)
+    return vector / norm if norm > 0 else vector
 
 
 if __name__ == "__main__":
     # --- PROOF IT WORKS ---
-    
+
     car_history = ["I like the Toyota Camry."]
     laptop_history = ["I like the MacBook Pro."]
     new_question = "What is the price of this?"
-    
-    # Generate vectors for both
+
     vector_car = embed_with_context(new_question, car_history)
     vector_laptop = embed_with_context(new_question, laptop_history)
-    
-    # Calculate similarity
-    similarity = float(np.dot(vector_car, vector_laptop) / (np.linalg.norm(vector_car) * np.linalg.norm(vector_laptop)))
-    
-    print("--- Pronoun Problem Test ---")
-    print(f"Car Question Vector    -> 'I like the Toyota Camry. What is the price of this?'")
-    print(f"Laptop Question Vector -> 'I like the MacBook Pro. What is the price of this?'")
-    print(f"Similarity Score: {similarity:.3f}")
-    print("Because the score is not 1.0, Qdrant knows they are different topics!")
+
+    similarity = float(
+        np.dot(vector_car, vector_laptop)
+        / (np.linalg.norm(vector_car) * np.linalg.norm(vector_laptop))
+    )
+
+    print("--- Pronoun Problem Test (Weighted Vector Fusion) ---")
+    print(f"Car Question Vector    -> 0.80 * {new_question!r} + 0.20 * {car_history[0]!r}")
+    print(f"Laptop Question Vector -> 0.80 * {new_question!r} + 0.20 * {laptop_history[0]!r}")
+    print(f"Similarity Score: {similarity:.4f}")
+    print(
+        "NOTE: the two differ, but only slightly. The context term carries 0.20 of "
+        "the\nvector, so the pronoun is still mostly drowned out by the shared query. "
+        "This\nmodule resolves the question, not the trust decision — see "
+        "SIMILARITY_FLOOR in\nqdrant_store.py for that."
+    )

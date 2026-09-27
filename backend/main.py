@@ -73,18 +73,15 @@ async def chat_completions(request: Request):
     model = body.get("model") or DEFAULT_MODEL
     stream = body.get("stream", False)
 
-    # We keep TWO versions of the message history:
+    # Groq gets the ENTIRE conversation so it fully understands what was said 20
+    # turns ago — that is what gives correct answers.
     #
-    # 1. full_messages  → sent to Groq (the real LLM).
-    #                     Groq needs the ENTIRE conversation so it fully understands
-    #                     what was said 20 turns ago. This is what gives correct answers.
-    #
-    # 2. cache_messages → used for Qdrant embedding ONLY (last 5 messages).
-    #                     We only need recent context to build a meaningful search vector.
-    #                     Sending 50 turns to the embedding model dilutes the vector
-    #                     and wastes time. 5 is always enough for context.
-    full_messages  = messages            # full history → goes to Groq
-    cache_messages = messages[-10:]      # last 10 only  → goes to Qdrant
+    # The cache layer receives the same array but keeps only user turns; see
+    # `qdrant_store.user_chain`. It used to be pre-sliced to `messages[-10:]`
+    # here, which kept the last 10 *mixed-role* messages and so handed the role
+    # filter a set already truncated by assistant prose. The context chain caps
+    # how far back it reads, so no pre-slice is needed.
+    full_messages = messages            # full history → goes to Groq
 
     # MemoLM Custom Headers (for Safety Gate)
     tenant_id = request.headers.get("x-memolm-tenant", "default-tenant")
@@ -103,16 +100,18 @@ async def chat_completions(request: Request):
     risk_level = "low"
 
     # -----------------------------------------------------------------------
-    # 1. SEMANTIC CACHE LOOKUP  (uses cache_messages — last 5 only)
+    # 1. SEMANTIC CACHE LOOKUP  (user turns only, via the context chain)
     # -----------------------------------------------------------------------
-    # We grab the latest question from the messages
-    current_query = cache_messages[-1].get("content", "") if isinstance(cache_messages[-1], dict) else cache_messages[-1]
+    # The query the TTL router scores. Derived from user turns for the same
+    # reason the cache embeds only user turns: an assistant message must never
+    # become the thing we key TTL and retrieval off.
+    current_query, _ = cache.user_chain(messages)
 
     cached_result = cache.fetch_from_cache(
         tenant_id=tenant_id,
         provider="groq",
         model=model,
-        messages=cache_messages,
+        messages=messages,
         version=knowledge_version,
         risk=risk_level
     )
@@ -140,8 +139,10 @@ async def chat_completions(request: Request):
     # -----------------------------------------------------------------------
     print(f"❌ CACHE MISS. Routing to Groq...")
     
-    # Calculate how long to cache this specific question
-    ttl = get_semantic_ttl(current_query, risk_level=risk_level)
+    # Calculate how long to cache this specific question.
+    # No usable user turn (empty or multimodal-only request) → ttl 0, so the
+    # answer is served but never written to the cache.
+    ttl = get_semantic_ttl(current_query, risk_level=risk_level) if current_query else 0
 
     if not stream:
         # NON-STREAMING FALLBACK
@@ -164,9 +165,9 @@ async def chat_completions(request: Request):
         llm_answer = chat_completion.choices[0].message.content
 
         if ttl > 0:
-            # cache_messages (last 5) → we only store recent context in the Qdrant vector
+            # Only user turns are stored; qdrant_store.user_chain applies the filter
             cache.save_to_cache(
-                tenant_id, "groq", model, cache_messages, llm_answer,
+                tenant_id, "groq", model, messages, llm_answer,
                 version=knowledge_version, ttl=ttl, risk=risk_level
             )
 
@@ -205,10 +206,10 @@ async def chat_completions(request: Request):
 
         yield "data: [DONE]\n\n"
 
-        # After the stream finishes, save to Qdrant using cache_messages (last 5 only)
+        # After the stream finishes, save to Qdrant (user turns only)
         if ttl > 0 and accumulated_answer.strip():
             cache.save_to_cache(
-                tenant_id, "groq", model, cache_messages, accumulated_answer,
+                tenant_id, "groq", model, messages, accumulated_answer,
                 version=knowledge_version, ttl=ttl, risk=risk_level
             )
 
