@@ -17,6 +17,7 @@ from memolm.exceptions import (
     MemoLMError,
     GatewayUnavailableError,
     UpstreamProviderError,
+    SafetyGateRejectionError,
 )
 
 # Convenience alias for MemoLM.Async(...)
@@ -35,4 +36,5 @@ __all__ = [
     "MemoLMError",
     "GatewayUnavailableError",
     "UpstreamProviderError",
+    "SafetyGateRejectionError",
 ]

@@ -46,6 +46,12 @@ export interface MemoLMClientConfig {
    * Additional custom headers sent with every request.
    */
   defaultHeaders?: Record<string, string>;
+
+  /**
+   * Maximum number of retry attempts on transient errors (429, 500, 503).
+   * @default 2
+   */
+  maxRetries?: number;
 }
 
 export interface ChatCompletionCreateParamsBase {
@@ -85,6 +91,11 @@ export interface ChatCompletionCreateParamsBase {
    * Maximum number of tokens to generate.
    */
   max_tokens?: number;
+
+  /**
+   * TTL in seconds for the cached response. Overrides the gateway default.
+   */
+  ttlSeconds?: number;
 
   /**
    * Additional headers to pass for this specific request.

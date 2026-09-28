@@ -6,8 +6,30 @@ import {
   ChatCompletionCreateParamsStreaming,
   MemoLMClientConfig,
 } from "./types";
-import { MemoLMError, UpstreamProviderError } from "./errors";
+import { MemoLMError, UpstreamProviderError, SafetyGateRejectionError, GatewayUnavailableError } from "./errors";
 import { createSSEStream } from "./streaming";
+
+// Status codes that warrant a retry
+const RETRYABLE_STATUS_CODES = new Set([429, 500, 503]);
+const DEFAULT_MAX_RETRIES = 2;
+const BACKOFF_BASE_MS = 500;
+const BACKOFF_CAP_MS = 8000;
+
+function computeBackoffMs(attempt: number): number {
+  const ceiling = Math.min(BACKOFF_CAP_MS, BACKOFF_BASE_MS * Math.pow(2, attempt));
+  return Math.random() * ceiling;
+}
+
+function getRetryAfterMs(headers: Headers): number | null {
+  const value = headers.get("retry-after");
+  if (value === null) return null;
+  const parsed = parseFloat(value);
+  return isNaN(parsed) ? null : Math.min(parsed * 1000, BACKOFF_CAP_MS);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 export class Completions {
   private client: MemoLM;
@@ -49,12 +71,12 @@ export class MemoLM {
   public defaultRisk: string;
   public defaultModel?: string;
   public defaultHeaders: Record<string, string>;
+  public maxRetries: number;
 
   public chat: Chat;
 
   constructor(config: MemoLMClientConfig = {}) {
     let base = config.baseURL || "http://localhost:8000";
-    // Strip trailing slash
     base = base.replace(/\/+$/, "");
     this.baseURL = base;
 
@@ -64,8 +86,66 @@ export class MemoLM {
     this.defaultRisk = config.defaultRisk || "low";
     this.defaultModel = config.defaultModel;
     this.defaultHeaders = config.defaultHeaders || {};
+    this.maxRetries = config.maxRetries ?? DEFAULT_MAX_RETRIES;
 
     this.chat = new Chat(this);
+  }
+
+  private _buildHeaders(params: {
+    knowledgeVersion?: string;
+    tenantId?: string;
+    risk?: string;
+    ttlSeconds?: number;
+    extraHeaders?: Record<string, string>;
+  }): Record<string, string> {
+    const selectedVersion = params.knowledgeVersion || this.defaultKnowledgeVersion;
+    const selectedTenant = params.tenantId || this.defaultTenant;
+    const selectedRisk = params.risk || this.defaultRisk;
+
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${this.apiKey}`,
+      "x-memolm-tenant": selectedTenant,
+      // Send both header names for full parity with the Python SDK
+      "x-memolm-version": selectedVersion,
+      "x-memolm-knowledge-version": selectedVersion,
+      "x-memolm-risk": selectedRisk,
+      ...this.defaultHeaders,
+      ...params.extraHeaders,
+    };
+
+    if (params.ttlSeconds !== undefined) {
+      headers["x-memolm-ttl"] = String(params.ttlSeconds);
+    }
+
+    return headers;
+  }
+
+  private _buildEndpoint(): string {
+    if (this.baseURL.endsWith("/openai/v1") || this.baseURL.endsWith("/v1")) {
+      return `${this.baseURL}/chat/completions`;
+    }
+    return `${this.baseURL}/openai/v1/chat/completions`;
+  }
+
+  private _parseErrorBody(body: any, status: number): never {
+    const message: string =
+      body?.error?.message ||
+      body?.message ||
+      `MemoLM Gateway error (${status})`;
+
+    const rejectionReasons: string[] =
+      body?.rejection_reasons ||
+      body?.error?.rejection_reasons ||
+      [];
+
+    if (status === 502) {
+      throw new UpstreamProviderError(message, status, body);
+    }
+    if (status === 400 && rejectionReasons.length > 0) {
+      throw new SafetyGateRejectionError(message, rejectionReasons);
+    }
+    throw new MemoLMError(message, status, body);
   }
 
   /**
@@ -78,87 +158,90 @@ export class MemoLM {
       knowledgeVersion,
       tenantId,
       risk,
+      ttlSeconds,
       extraHeaders,
       model,
+      stream,
       ...bodyParams
     } = params;
 
+    const targetEndpoint = this._buildEndpoint();
+    const headers = this._buildHeaders({ knowledgeVersion, tenantId, risk, ttlSeconds, extraHeaders });
     const selectedModel = model || this.defaultModel || "openai/gpt-oss-20b";
-    const selectedKnowledgeVersion =
-      knowledgeVersion || this.defaultKnowledgeVersion;
-    const selectedTenant = tenantId || this.defaultTenant;
-    const selectedRisk = risk || this.defaultRisk;
-
-    const headers: Record<string, string> = {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${this.apiKey}`,
-      "x-memolm-tenant": selectedTenant,
-      "x-memolm-version": selectedKnowledgeVersion,
-      "x-memolm-risk": selectedRisk,
-      ...this.defaultHeaders,
-      ...extraHeaders,
-    };
-
-    // Determine target URL
-    let targetEndpoint = `${this.baseURL}/openai/v1/chat/completions`;
-    if (this.baseURL.endsWith("/openai/v1") || this.baseURL.endsWith("/v1")) {
-      targetEndpoint = `${this.baseURL}/chat/completions`;
-    }
 
     const payload = {
       model: selectedModel,
       ...bodyParams,
+      ...(stream ? { stream: true } : {}),
     };
 
-    let response: Response;
-    try {
-      response = await fetch(targetEndpoint, {
-        method: "POST",
-        headers,
-        body: JSON.stringify(payload),
-      });
-    } catch (err: any) {
-      throw new MemoLMError(
-        `Failed to connect to MemoLM Gateway at ${targetEndpoint}: ${err.message}`,
-        undefined,
-        err
-      );
-    }
-
-    if (!response.ok) {
-      let errorBody: any = null;
-      let errorText = "";
+    // Streaming: no retry — can't replay a consumed stream
+    if (stream) {
+      let response: Response;
       try {
-        errorText = await response.text();
-        errorBody = JSON.parse(errorText);
-      } catch {
-        // Ignored if non-json
-      }
-
-      if (response.status === 502) {
-        throw new UpstreamProviderError(
-          errorBody?.error?.message ||
-            errorText ||
-            `Upstream provider error (${response.status})`,
-          response.status,
-          errorBody
+        response = await fetch(targetEndpoint, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(payload),
+        });
+      } catch (err: any) {
+        throw new GatewayUnavailableError(
+          `Failed to connect to MemoLM Gateway at ${targetEndpoint}: ${err?.message ?? err}`
         );
       }
 
-      throw new MemoLMError(
-        errorBody?.error?.message ||
-          errorText ||
-          `MemoLM Gateway error (${response.status})`,
-        response.status,
-        errorBody
-      );
-    }
+      if (!response.ok) {
+        let errorBody: any = null;
+        try { errorBody = await response.json(); } catch { /* ignore */ }
+        this._parseErrorBody(errorBody, response.status);
+      }
 
-    if (params.stream) {
       return createSSEStream(response);
     }
 
-    const json = (await response.json()) as ChatCompletion;
-    return json;
+    // Non-streaming: retry on transient errors
+    let lastError: Error | null = null;
+
+    for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
+      let response: Response;
+
+      try {
+        response = await fetch(targetEndpoint, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(payload),
+        });
+      } catch (err: any) {
+        // Network / DNS failure — not retryable
+        throw new GatewayUnavailableError(
+          `Failed to connect to MemoLM Gateway at ${targetEndpoint}: ${err?.message ?? err}`
+        );
+      }
+
+      if (!response.ok) {
+        let errorBody: any = null;
+        try { errorBody = await response.json(); } catch { /* ignore */ }
+
+        if (RETRYABLE_STATUS_CODES.has(response.status) && attempt < this.maxRetries) {
+          const delayMs =
+            getRetryAfterMs(response.headers) ?? computeBackoffMs(attempt);
+          await sleep(delayMs);
+          lastError = new MemoLMError(
+            errorBody?.error?.message || `HTTP ${response.status}`,
+            response.status,
+            errorBody
+          );
+          continue;
+        }
+
+        this._parseErrorBody(errorBody, response.status);
+      }
+
+      const json = (await response.json()) as ChatCompletion;
+      return json;
+    }
+
+    // Unreachable but satisfies TypeScript
+    throw lastError ?? new MemoLMError("Unexpected retry loop exit");
   }
 }

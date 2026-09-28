@@ -11,6 +11,14 @@ export class MemoLMError extends Error {
   }
 }
 
+export class GatewayUnavailableError extends MemoLMError {
+  constructor(message: string) {
+    super(message, undefined);
+    this.name = "GatewayUnavailableError";
+    Object.setPrototypeOf(this, GatewayUnavailableError.prototype);
+  }
+}
+
 export class SafetyGateRejectionError extends MemoLMError {
   public rejectionReasons: string[];
 

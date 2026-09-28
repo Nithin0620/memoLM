@@ -1,4 +1,5 @@
-from typing import Optional, Any
+from typing import Optional, Any, List
+
 
 class MemoLMError(Exception):
     """Base exception for all MemoLM SDK errors."""
@@ -21,10 +22,36 @@ class MemoLMError(Exception):
 
 
 class GatewayUnavailableError(MemoLMError):
-    """Raised when the MemoLM gateway cannot be reached."""
+    """Raised when the MemoLM gateway cannot be reached (connection error or timeout)."""
     pass
 
 
 class UpstreamProviderError(MemoLMError):
     """Raised when the upstream LLM provider (e.g. Groq, OpenAI) returns an error."""
     pass
+
+
+class SafetyGateRejectionError(MemoLMError):
+    """
+    Raised when the MemoLM Safety Gate rejects a request.
+
+    Inspect ``rejection_reasons`` for a list of failed checks
+    (e.g. ``["knowledge_version_mismatch", "risk_policy_exceeded"]``).
+    """
+
+    def __init__(
+        self,
+        message: str,
+        rejection_reasons: Optional[List[str]] = None,
+        status_code: Optional[int] = 400,
+        response_body: Optional[Any] = None,
+    ) -> None:
+        super().__init__(message, status_code=status_code, response_body=response_body)
+        self.rejection_reasons: List[str] = rejection_reasons or []
+
+    def __str__(self) -> str:
+        base = super().__str__()
+        if self.rejection_reasons:
+            reasons = ", ".join(self.rejection_reasons)
+            return f"{base} (reasons: {reasons})"
+        return base

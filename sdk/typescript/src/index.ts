@@ -3,6 +3,7 @@ export { createSSEStream } from "./streaming";
 export type { Stream } from "./streaming";
 export {
   MemoLMError,
+  GatewayUnavailableError,
   SafetyGateRejectionError,
   UpstreamProviderError,
 } from "./errors";

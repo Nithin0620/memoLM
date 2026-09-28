@@ -1,9 +1,9 @@
 import json
-from typing import Iterator, AsyncIterator, Optional
+from typing import Iterator, AsyncIterator, Optional, List
 import httpx
 
 from memolm.models import ChatCompletionChunk
-from memolm.exceptions import UpstreamProviderError, MemoLMError
+from memolm.exceptions import UpstreamProviderError, MemoLMError, SafetyGateRejectionError
 
 
 def _parse_sse_data(raw_data: str) -> Optional[ChatCompletionChunk]:
@@ -20,8 +20,12 @@ def _parse_sse_data(raw_data: str) -> Optional[ChatCompletionChunk]:
         err = parsed["error"]
         msg = err.get("message") if isinstance(err, dict) else str(err)
         err_type = err.get("type", "") if isinstance(err, dict) else ""
+        rejection_reasons: List[str] = err.get("rejection_reasons", []) if isinstance(err, dict) else []
+
         if err_type == "upstream_error":
             raise UpstreamProviderError(msg, status_code=502, response_body=parsed)
+        if err_type == "safety_rejected" or rejection_reasons:
+            raise SafetyGateRejectionError(msg, rejection_reasons=rejection_reasons, response_body=parsed)
         raise MemoLMError(msg, status_code=500, response_body=parsed)
 
     return ChatCompletionChunk.model_validate(parsed)

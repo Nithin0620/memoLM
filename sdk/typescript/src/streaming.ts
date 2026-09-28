@@ -1,5 +1,5 @@
 import { ChatCompletionChunk } from "./types";
-import { UpstreamProviderError } from "./errors";
+import { MemoLMError, UpstreamProviderError, SafetyGateRejectionError } from "./errors";
 
 export type Stream<Item> = AsyncIterable<Item>;
 
@@ -10,7 +10,7 @@ export async function* createSSEStream(
   response: Response
 ): AsyncGenerator<ChatCompletionChunk, void, unknown> {
   if (!response.body) {
-    throw new Error("Response body is empty or not readable.");
+    throw new MemoLMError("Response body is empty or not readable.");
   }
 
   const reader = response.body.getReader();
@@ -29,7 +29,7 @@ export async function* createSSEStream(
       for (const line of lines) {
         const trimmed = line.trim();
         if (!trimmed || trimmed.startsWith(":")) {
-          // Empty line or SSE comment/heartbeat
+          // Empty line or SSE comment/heartbeat — skip
           continue;
         }
 
@@ -40,25 +40,34 @@ export async function* createSSEStream(
             return;
           }
 
+          let parsed: any;
           try {
-            const parsed = JSON.parse(data);
-
-            // Check if gateway forwarded an upstream error frame
-            if (parsed.error) {
-              throw new UpstreamProviderError(
-                parsed.error.message || "Upstream provider error during streaming",
-                502,
-                parsed.error
-              );
-            }
-
-            yield parsed as ChatCompletionChunk;
-          } catch (err) {
-            if (err instanceof UpstreamProviderError) {
-              throw err;
-            }
-            // Ignore corrupted lines or non-JSON payloads gracefully
+            parsed = JSON.parse(data);
+          } catch {
+            // Non-JSON line from gateway — surface as an error rather than silently dropping
+            throw new MemoLMError(
+              `Received malformed SSE data from MemoLM Gateway: ${data.slice(0, 120)}`
+            );
           }
+
+          // Gateway forwarded an error frame
+          if (parsed.error) {
+            const errMsg: string =
+              parsed.error?.message || "Unknown error in stream";
+            const errType: string = parsed.error?.type || "";
+            const rejectionReasons: string[] =
+              parsed.error?.rejection_reasons || [];
+
+            if (errType === "upstream_error") {
+              throw new UpstreamProviderError(errMsg, 502, parsed.error);
+            }
+            if (errType === "safety_rejected" || rejectionReasons.length > 0) {
+              throw new SafetyGateRejectionError(errMsg, rejectionReasons);
+            }
+            throw new MemoLMError(errMsg, 500, parsed.error);
+          }
+
+          yield parsed as ChatCompletionChunk;
         }
       }
     }

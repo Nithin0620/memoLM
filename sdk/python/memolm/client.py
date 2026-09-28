@@ -3,8 +3,9 @@ import httpx
 import json
 
 from memolm.models import ChatCompletion, ChatCompletionChunk, Message
-from memolm.exceptions import MemoLMError, UpstreamProviderError, GatewayUnavailableError
+from memolm.exceptions import MemoLMError, UpstreamProviderError, GatewayUnavailableError, SafetyGateRejectionError
 from memolm.streaming import create_sse_stream
+from memolm._retry import should_retry, sleep_before_retry, DEFAULT_MAX_RETRIES
 
 
 class Completions:
@@ -100,6 +101,7 @@ class MemoLM:
         default_model: Optional[str] = None,
         default_headers: Optional[Dict[str, str]] = None,
         timeout: float = 60.0,
+        max_retries: int = DEFAULT_MAX_RETRIES,
         http_client: Optional[httpx.Client] = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
@@ -110,6 +112,7 @@ class MemoLM:
         self.default_model = default_model
         self.default_headers = default_headers or {}
         self.timeout = timeout
+        self.max_retries = max_retries
 
         self._http_client = http_client or httpx.Client(timeout=timeout)
         self._owns_http_client = http_client is None
@@ -192,12 +195,17 @@ class MemoLM:
         if extra_kwargs:
             payload.update(extra_kwargs)
 
+        # Streaming: no retry (can't replay a consumed stream safely)
         if stream:
             try:
                 request = self._http_client.build_request(
                     "POST", target_endpoint, headers=headers, json=payload
                 )
                 response = self._http_client.send(request, stream=True)
+            except httpx.TimeoutException as exc:
+                raise GatewayUnavailableError(
+                    f"Request to MemoLM Gateway timed out: {exc}"
+                ) from exc
             except httpx.RequestError as exc:
                 raise GatewayUnavailableError(
                     f"Failed to connect to MemoLM Gateway at {target_endpoint}: {exc}"
@@ -208,40 +216,63 @@ class MemoLM:
                     response.read()
                     error_data = response.json()
                     err_msg = error_data.get("error", {}).get("message", response.text)
+                    rejection_reasons = error_data.get("rejection_reasons") or error_data.get("error", {}).get("rejection_reasons", [])
                 except Exception:
                     err_msg = response.text or f"HTTP {response.status_code}"
+                    rejection_reasons = []
 
                 response.close()
                 if response.status_code == 502:
-                    raise UpstreamProviderError(
-                        err_msg, status_code=response.status_code
-                    )
+                    raise UpstreamProviderError(err_msg, status_code=response.status_code)
+                if response.status_code == 400 and rejection_reasons:
+                    raise SafetyGateRejectionError(err_msg, rejection_reasons=rejection_reasons, status_code=400)
                 raise MemoLMError(err_msg, status_code=response.status_code)
 
             return create_sse_stream(response)
 
-        try:
-            response = self._http_client.post(
-                target_endpoint, headers=headers, json=payload
-            )
-        except httpx.RequestError as exc:
-            raise GatewayUnavailableError(
-                f"Failed to connect to MemoLM Gateway at {target_endpoint}: {exc}"
-            ) from exc
-
-        if response.status_code >= 400:
+        # Non-streaming: retry on transient errors
+        last_exc: Optional[Exception] = None
+        for attempt in range(self.max_retries + 1):
             try:
-                error_data = response.json()
-                err_msg = error_data.get("error", {}).get("message", response.text)
-            except Exception:
-                err_msg = response.text or f"HTTP {response.status_code}"
+                response = self._http_client.post(
+                    target_endpoint, headers=headers, json=payload
+                )
+            except httpx.TimeoutException as exc:
+                last_exc = GatewayUnavailableError(
+                    f"Request to MemoLM Gateway timed out: {exc}"
+                )
+                if attempt < self.max_retries:
+                    sleep_before_retry(attempt)
+                    continue
+                raise last_exc from exc
+            except httpx.RequestError as exc:
+                raise GatewayUnavailableError(
+                    f"Failed to connect to MemoLM Gateway at {target_endpoint}: {exc}"
+                ) from exc
 
-            if response.status_code == 502:
-                raise UpstreamProviderError(err_msg, status_code=response.status_code)
-            raise MemoLMError(err_msg, status_code=response.status_code)
+            if response.status_code >= 400:
+                try:
+                    error_data = response.json()
+                    err_msg = error_data.get("error", {}).get("message", response.text)
+                    rejection_reasons = error_data.get("rejection_reasons") or error_data.get("error", {}).get("rejection_reasons", [])
+                except Exception:
+                    err_msg = response.text or f"HTTP {response.status_code}"
+                    rejection_reasons = []
 
-        data = response.json()
-        return ChatCompletion.model_validate(data)
+                if should_retry(response.status_code) and attempt < self.max_retries:
+                    sleep_before_retry(attempt, dict(response.headers))
+                    continue
+
+                if response.status_code == 502:
+                    raise UpstreamProviderError(err_msg, status_code=response.status_code)
+                if response.status_code == 400 and rejection_reasons:
+                    raise SafetyGateRejectionError(err_msg, rejection_reasons=rejection_reasons, status_code=400)
+                raise MemoLMError(err_msg, status_code=response.status_code)
+
+            return ChatCompletion.model_validate(response.json())
+
+        # Should not be reached, but satisfies type checker
+        raise MemoLMError("Unexpected retry loop exit")
 
     def __call__(
         self,
