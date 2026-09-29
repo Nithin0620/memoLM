@@ -52,6 +52,106 @@ export interface MemoLMClientConfig {
    * @default 2
    */
   maxRetries?: number;
+
+  /**
+   * When true, if the MemoLM gateway is unavailable or times out,
+   * the client automatically fails open and executes directly against the upstream provider.
+   * @default false
+   */
+  fallbackToUpstream?: boolean;
+
+  /**
+   * Upstream provider to fallback to ("openai" | "groq").
+   * @default "groq"
+   */
+  upstreamProvider?: "openai" | "groq" | string;
+
+  /**
+   * Upstream API key used if fallbackToUpstream is enabled.
+   */
+  upstreamApiKey?: string;
+
+  /**
+   * Upstream base URL used if fallbackToUpstream is enabled.
+   */
+  upstreamBaseURL?: string;
+
+  /**
+   * Callback fired when a verified safe cache hit is returned.
+   */
+  onCacheHit?: (stats: MemoLMStats) => void;
+
+  /**
+   * Callback fired when a cache miss routes to the LLM.
+   */
+  onCacheMiss?: (stats: MemoLMStats) => void;
+
+  /**
+   * Callback fired when the Safety Gate rejects a candidate.
+   */
+  onSafetyReject?: (rejectionReasons: string[]) => void;
+}
+
+export interface SessionMetrics {
+  totalRequests: number;
+  cacheHits: number;
+  cacheMisses: number;
+  safetyRejections: number;
+  totalLatencySavedSec: number;
+  estimatedCostSavedUsd: number;
+  hitRatePct: number;
+  toString?: () => string;
+}
+
+export interface InvalidateParams {
+  version?: string;
+  tenantId?: string;
+}
+
+export interface InvalidateResult {
+  status: string;
+  message?: string;
+  deleted_count: number;
+  tenant_id?: string | null;
+  version?: string | null;
+}
+
+export interface InspectParams {
+  query?: string;
+  messages?: Message[];
+  tenantId?: string;
+  version?: string;
+  risk?: RiskLevel;
+  similarityThreshold?: number;
+}
+
+export interface InspectResult {
+  candidate_found: boolean;
+  verdict: string;
+  similarity: number;
+  required_similarity?: number;
+  rejection_reasons: string[];
+  cached_response?: string | null;
+  cached_version?: string | null;
+  tenant_id?: string | null;
+  ttl_remaining_seconds?: number;
+  matched_query?: string | null;
+}
+
+export interface QAPair {
+  question: string;
+  answer: string;
+  tenantId?: string;
+  version?: string;
+  risk?: RiskLevel;
+  ttlSeconds?: number;
+  provider?: string;
+  model?: string;
+}
+
+export interface SeedResult {
+  status: string;
+  seeded_count: number;
 }
 
 export interface ChatCompletionCreateParamsBase {
@@ -81,6 +181,23 @@ export interface ChatCompletionCreateParamsBase {
    * @default "low"
    */
   risk?: RiskLevel;
+
+  /**
+   * When true, skips cache reading, forces a fresh LLM call, and updates the cache.
+   * @default false
+   */
+  forceRefresh?: boolean;
+
+  /**
+   * When true, only returns if there is a safe cache hit; does not query upstream LLM on a miss.
+   * @default false
+   */
+  cacheOnly?: boolean;
+
+  /**
+   * Explicit cosine similarity threshold override for this request (e.g. 0.95).
+   */
+  similarityThreshold?: number;
 
   /**
    * Sampling temperature between 0 and 2.

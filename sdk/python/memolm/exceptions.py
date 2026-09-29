@@ -55,3 +55,16 @@ class SafetyGateRejectionError(MemoLMError):
             reasons = ", ".join(self.rejection_reasons)
             return f"{base} (reasons: {reasons})"
         return base
+
+
+class CacheMissError(MemoLMError):
+    """
+    Raised when cache_only=True was requested but no safe cache hit was found.
+    """
+    def __init__(
+        self,
+        message: str = "Cache miss and cache_only was requested.",
+        status_code: Optional[int] = 404,
+        response_body: Optional[Any] = None,
+    ) -> None:
+        super().__init__(message, status_code=status_code, response_body=response_body)

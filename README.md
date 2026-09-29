@@ -99,6 +99,11 @@ print(response.memolm_verdict)
 
 ---
 
+> 📖 **Full SDK Documentation & Guide:** See [SDK_GUIDE.md](SDK_GUIDE.md) for complete Python and TypeScript SDK setup, streaming, fail-open resilience, active cache controls, and cookbooks.
+
+---
+
+
 ## 🛡️ The Safety Gate
 
 Every candidate match is evaluated against explicit constraints:

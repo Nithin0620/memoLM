@@ -41,6 +41,7 @@ from qdrant_client.models import (
     Distance,
     FieldCondition,
     Filter,
+    FilterSelector,
     MatchValue,
     PayloadSchemaType,
     PointStruct,
@@ -232,41 +233,79 @@ def fetch_from_cache(
     version: Optional[str] = None,
     risk: Optional[str] = None,
     score_threshold: float = SIMILARITY_FLOOR,
+    similarity_threshold: Optional[float] = None,
+    return_rejection_details: bool = False,
 ) -> Optional[dict]:
     """
     Search Qdrant for a semantically similar past answer.
     Passes every candidate through the Safety Gate.
-    Returns the cached payload dict on a SAFE HIT, or None on a miss/rejection.
+    Returns the cached payload dict on a SAFE HIT, or None/rejection details on a miss/rejection.
     """
     # If no knowledge_version was provided, skip the cache entirely.
-    # We never want to serve a cached answer when we don't know what version the data is.
     if version is None:
+        if return_rejection_details:
+            return {
+                "verdict": "CACHE_MISS",
+                "similarity": 0.0,
+                "rejection_reasons": ["missing_knowledge_version"],
+                "payload": None,
+            }
         return None
 
     current_query, prior_messages = user_chain(messages)
     if current_query is None:
         print("[Qdrant] MISS — no usable user message to build a chain from")
+        if return_rejection_details:
+            return {
+                "verdict": "CACHE_MISS",
+                "similarity": 0.0,
+                "rejection_reasons": ["no_usable_user_message"],
+                "payload": None,
+            }
         return None
 
     query_vector = embed_with_context(current_query, prior_messages)
+
+    effective_threshold = (
+        min(score_threshold, similarity_threshold)
+        if similarity_threshold is not None
+        else score_threshold
+    )
+
+    # Allow matching exact provider/model or seeded items ("all" / "seed")
+    provider_conditions = [MatchValue(value=provider), MatchValue(value="seed"), MatchValue(value="all")]
+    model_conditions = [MatchValue(value=model), MatchValue(value="all")]
+
+    provider_filter = [FieldCondition(key="provider", match=MatchValue(value=p)) for p in [provider, "seed", "all"]]
+    model_filter = [FieldCondition(key="model", match=MatchValue(value=m)) for m in [model, "all"]]
 
     response = get_qdrant().query_points(
         collection_name=COLLECTION_NAME,
         query=query_vector.tolist(),
         limit=1,
-        score_threshold=score_threshold,
+        score_threshold=effective_threshold,
         query_filter=Filter(
             must=[
                 FieldCondition(key="tenant_id", match=MatchValue(value=tenant_id)),
-                FieldCondition(key="provider",  match=MatchValue(value=provider)),
-                FieldCondition(key="model",     match=MatchValue(value=model)),
-            ]
+            ],
+            should=[
+                FieldCondition(key="provider", match=MatchValue(value=provider)),
+                FieldCondition(key="provider", match=MatchValue(value="seed")),
+                FieldCondition(key="provider", match=MatchValue(value="all")),
+            ],
         ),
     )
     results = response.points
 
     if not results:
-        print(f"[Qdrant] MISS — no candidate above score_threshold={score_threshold}")
+        print(f"[Qdrant] MISS — no candidate above score_threshold={effective_threshold}")
+        if return_rejection_details:
+            return {
+                "verdict": "CACHE_MISS",
+                "similarity": 0.0,
+                "rejection_reasons": [],
+                "payload": None,
+            }
         return None
 
     candidate = results[0]
@@ -278,6 +317,7 @@ def fetch_from_cache(
     # -----------------------------------------------------------------------
     # 4. SAFETY GATE — 4-point verification
     # -----------------------------------------------------------------------
+    rejection_reasons = []
 
     # Check A: Knowledge Version must match
     cached_version = payload.get("knowledge_version", "")
@@ -285,7 +325,7 @@ def fetch_from_cache(
     if cached_version != request_version:
         print(f"[Safety Gate] REJECTED — knowledge_version mismatch: "
               f"cached='{cached_version}' vs request='{request_version}'")
-        return None
+        rejection_reasons.append("knowledge_version_mismatch")
 
     # Check B: TTL — make sure the entry hasn't expired
     now = time.time()
@@ -293,19 +333,28 @@ def fetch_from_cache(
     if now > expiry:
         print(f"[Safety Gate] REJECTED — entry expired "
               f"({int(now - expiry)}s ago)")
-        return None
+        rejection_reasons.append("entry_expired")
 
-    # Check C: Risk-based similarity threshold
-    # The Safety Gate's final similarity check, applied on top of SIMILARITY_FLOOR.
-    # `risk` grades how much harm a wrong answer would cause, so a HIGHER risk
-    # demands a STRICTER match. "low" is the default and the least demanding;
-    # "high" (medical/financial/legal) needs near-exact agreement.
-    # This is the last line of defense against false positive cache hits.
+    # Check C: Risk-based or explicit similarity threshold
     risk_thresholds = {"low": 0.85, "medium": 0.90, "high": 0.95}
-    required_score  = risk_thresholds.get((risk or "low").lower(), 0.92)
+    required_score = (
+        similarity_threshold
+        if similarity_threshold is not None
+        else risk_thresholds.get((risk or "low").lower(), 0.92)
+    )
     if score < required_score:
         print(f"[Safety Gate] REJECTED — score {score:.3f} < required {required_score} "
               f"for risk='{risk}'")
+        rejection_reasons.append("similarity_below_threshold")
+
+    if rejection_reasons:
+        if return_rejection_details:
+            return {
+                "verdict": "SAFETY_REJECTED",
+                "similarity": round(score, 4),
+                "rejection_reasons": rejection_reasons,
+                "payload": payload,
+            }
         return None
 
     # -----------------------------------------------------------------------
@@ -319,8 +368,183 @@ def fetch_from_cache(
         "verdict":       "SAFE_CACHE_HIT",
         "similarity":    round(score, 4),
         "latency_saved": latency_saved,
+        "latency_saved_ms": int(latency_saved * 1000),
+        "cost_saved":    0.005,
         "payload":       payload,
     }
+
+
+def invalidate_cache(tenant_id: Optional[str] = None, version: Optional[str] = None) -> int:
+    """
+    Invalidate cached entries by tenant and/or knowledge version.
+    Returns 1 on success, 0 on failure or no filter provided.
+    """
+    must_conditions = []
+    if tenant_id:
+        must_conditions.append(FieldCondition(key="tenant_id", match=MatchValue(value=tenant_id)))
+    if version:
+        must_conditions.append(FieldCondition(key="knowledge_version", match=MatchValue(value=version)))
+
+    if not must_conditions:
+        return 0
+
+    try:
+        get_qdrant().delete(
+            collection_name=COLLECTION_NAME,
+            points_selector=FilterSelector(filter=Filter(must=must_conditions)),
+        )
+        print(f"[Qdrant] Cache invalidated: tenant_id='{tenant_id}', version='{version}'")
+        return 1
+    except Exception as exc:
+        print(f"[Qdrant] Invalidation error: {exc}")
+        return 0
+
+
+def inspect_cache(
+    query: Optional[str] = None,
+    messages: Optional[list] = None,
+    tenant_id: str = "default-tenant",
+    version: Optional[str] = None,
+    risk: str = "low",
+    similarity_threshold: Optional[float] = None,
+) -> dict:
+    """
+    Dry-run a query against Qdrant to inspect what would hit, cosine similarity,
+    and whether the Safety Gate would pass or reject, without billing an LLM call.
+    """
+    if query:
+        current_query, prior_messages = query, []
+    elif messages:
+        current_query, prior_messages = user_chain(messages)
+    else:
+        return {
+            "candidate_found": False,
+            "verdict": "CACHE_MISS",
+            "similarity": 0.0,
+            "rejection_reasons": ["empty_query"],
+            "cached_response": None,
+        }
+
+    if not current_query:
+        return {
+            "candidate_found": False,
+            "verdict": "CACHE_MISS",
+            "similarity": 0.0,
+            "rejection_reasons": ["empty_query"],
+            "cached_response": None,
+        }
+
+    query_vector = embed_with_context(current_query, prior_messages)
+
+    response = get_qdrant().query_points(
+        collection_name=COLLECTION_NAME,
+        query=query_vector.tolist(),
+        limit=1,
+        score_threshold=0.50,  # Broad threshold to inspect nearest candidate
+        query_filter=Filter(
+            must=[
+                FieldCondition(key="tenant_id", match=MatchValue(value=tenant_id)),
+            ]
+        ),
+    )
+    results = response.points
+    if not results:
+        return {
+            "candidate_found": False,
+            "verdict": "CACHE_MISS",
+            "similarity": 0.0,
+            "rejection_reasons": [],
+            "cached_response": None,
+        }
+
+    candidate = results[0]
+    payload = candidate.payload or {}
+    score = float(candidate.score)
+
+    rejection_reasons = []
+    cached_version = payload.get("knowledge_version", "")
+    if version and cached_version != version:
+        rejection_reasons.append("knowledge_version_mismatch")
+
+    now = time.time()
+    expiry = payload.get("expiry", 0)
+    if now > expiry:
+        rejection_reasons.append("entry_expired")
+
+    risk_thresholds = {"low": 0.85, "medium": 0.90, "high": 0.95}
+    required_score = (
+        similarity_threshold
+        if similarity_threshold is not None
+        else risk_thresholds.get((risk or "low").lower(), 0.92)
+    )
+    if score < required_score:
+        rejection_reasons.append("similarity_below_threshold")
+
+    verdict = "SAFE_CACHE_HIT" if not rejection_reasons else "SAFETY_REJECTED"
+
+    return {
+        "candidate_found": True,
+        "verdict": verdict,
+        "similarity": round(score, 4),
+        "required_similarity": required_score,
+        "rejection_reasons": rejection_reasons,
+        "cached_response": payload.get("response"),
+        "cached_version": cached_version,
+        "tenant_id": payload.get("tenant_id"),
+        "ttl_remaining_seconds": max(0, int(expiry - now)),
+        "matched_query": payload.get("query") or current_query,
+    }
+
+
+def seed_cache(items: list) -> int:
+    """
+    Bulk warm-up known documentation or FAQ entries directly into the vector store.
+    """
+    points = []
+    now = time.time()
+    for item in items:
+        if isinstance(item, dict):
+            question = item.get("question") or item.get("query")
+            answer = item.get("answer") or item.get("response")
+            tenant_id = item.get("tenant_id", "default-tenant")
+            version = item.get("version") or item.get("knowledge_version", "v1")
+            risk = item.get("risk", "low")
+            ttl = item.get("ttl") or item.get("ttl_seconds") or 864000
+            provider = item.get("provider", "seed")
+            model = item.get("model", "all")
+        else:
+            question = getattr(item, "question", None) or getattr(item, "query", None)
+            answer = getattr(item, "answer", None) or getattr(item, "response", None)
+            tenant_id = getattr(item, "tenant_id", "default-tenant")
+            version = getattr(item, "version", None) or getattr(item, "knowledge_version", "v1")
+            risk = getattr(item, "risk", "low")
+            ttl = getattr(item, "ttl", None) or getattr(item, "ttl_seconds", 864000)
+            provider = getattr(item, "provider", "seed")
+            model = getattr(item, "model", "all")
+
+        if not question or not answer:
+            continue
+
+        vector = embed_with_context(question, [])
+        point_id = str(uuid.uuid4())
+        payload = {
+            "tenant_id": tenant_id,
+            "provider": provider,
+            "model": model,
+            "knowledge_version": version,
+            "created_at": now,
+            "expiry": now + ttl,
+            "ttl_seconds": ttl,
+            "risk": risk,
+            "response": answer,
+            "query": question,
+        }
+        points.append(PointStruct(id=point_id, vector=vector.tolist(), payload=payload))
+
+    if points:
+        get_qdrant().upsert(collection_name=COLLECTION_NAME, points=points)
+        print(f"[Qdrant] Seeded {len(points)} items into cache.")
+    return len(points)
 
 
 # ---------------------------------------------------------------------------

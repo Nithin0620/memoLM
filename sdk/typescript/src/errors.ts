@@ -37,3 +37,11 @@ export class UpstreamProviderError extends MemoLMError {
     Object.setPrototypeOf(this, UpstreamProviderError.prototype);
   }
 }
+
+export class CacheMissError extends MemoLMError {
+  constructor(message = "Cache miss and cache_only was requested.", status = 404, errorData?: any) {
+    super(message, status, errorData);
+    this.name = "CacheMissError";
+    Object.setPrototypeOf(this, CacheMissError.prototype);
+  }
+}

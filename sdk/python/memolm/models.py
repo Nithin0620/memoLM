@@ -21,12 +21,81 @@ class MemoLMStats(BaseModel):
     similarity: float = 0.0
     latency_ms: float = 0.0
     latency_saved: float = 0.0
+    latency_saved_ms: float = 0.0
     estimated_cost_usd: float = 0.0
+    cost_saved: float = 0.0
+    cost_incurred: float = 0.0
     safety_verdict: Optional[str] = None
     matched_query: Optional[str] = None
     rejection_reasons: List[str] = Field(default_factory=list)
     checks: Optional[SafetyChecks] = None
     payload: Optional[Dict[str, Any]] = None
+
+
+class QAPair(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    question: str
+    answer: str
+    tenant_id: str = "default-tenant"
+    version: str = "v1"
+    risk: str = "low"
+    ttl_seconds: int = 864000
+    provider: str = "seed"
+    model: str = "all"
+
+
+class SessionMetrics(dict):
+    """
+    Structured dictionary for session-level ROI metrics with custom string display.
+    """
+    def __getattr__(self, name: str) -> Any:
+        try:
+            return self[name]
+        except KeyError:
+            raise AttributeError(f"'SessionMetrics' object has no attribute '{name}'")
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        self[name] = value
+
+    @property
+    def total_requests(self) -> int:
+        return self.get("total_requests", 0)
+
+    @property
+    def cache_hits(self) -> int:
+        return self.get("cache_hits", 0)
+
+    @property
+    def cache_misses(self) -> int:
+        return self.get("cache_misses", 0)
+
+    @property
+    def safety_rejections(self) -> int:
+        return self.get("safety_rejections", 0)
+
+    @property
+    def hit_rate_pct(self) -> float:
+        return self.get("hit_rate_pct", 0.0)
+
+    @property
+    def total_latency_saved_sec(self) -> float:
+        return self.get("total_latency_saved_sec", 0.0)
+
+    @property
+    def estimated_cost_saved_usd(self) -> float:
+        return self.get("estimated_cost_saved_usd", 0.0)
+
+    def __str__(self) -> str:
+        total = self.total_requests
+        hits = self.cache_hits
+        hit_rate = self.hit_rate_pct
+        latency = int(self.total_latency_saved_sec)
+        cost = self.estimated_cost_saved_usd
+        return f"Total requests: {total} | Hits: {hits} ({hit_rate:.1f}%) | Latency Saved: {latency}s | Cost Saved: ${cost:.2f}"
+
+    def __repr__(self) -> str:
+        return self.__str__()
 
 
 class Message(BaseModel):

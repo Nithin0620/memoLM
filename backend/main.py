@@ -62,6 +62,8 @@ async def stream_cached_response(cached_text: str) -> AsyncGenerator[str, None]:
 
 
 @app.post("/openai/v1/chat/completions")
+@app.post("/v1/chat/completions")
+@app.post("/chat/completions")
 async def chat_completions(request: Request):
     """
     Drop-in replacement for OpenAI/Groq API.
@@ -75,55 +77,68 @@ async def chat_completions(request: Request):
 
     # Groq gets the ENTIRE conversation so it fully understands what was said 20
     # turns ago — that is what gives correct answers.
-    #
-    # The cache layer receives the same array but keeps only user turns; see
-    # `qdrant_store.user_chain`. It used to be pre-sliced to `messages[-10:]`
-    # here, which kept the last 10 *mixed-role* messages and so handed the role
-    # filter a set already truncated by assistant prose. The context chain caps
-    # how far back it reads, so no pre-slice is needed.
     full_messages = messages            # full history → goes to Groq
 
     # MemoLM Custom Headers (for Safety Gate)
     tenant_id = request.headers.get("x-memolm-tenant", "default-tenant")
 
-    # knowledge_version is REQUIRED. We do not default to "v1" anymore.
-    # If the client forgets to send it, we reject the cache lookup entirely
-    # and always go to the LLM. This prevents stale cache hits when business
-    # data changes — the client MUST explicitly send the current version.
-    knowledge_version = request.headers.get("x-memolm-version")
+    # knowledge_version is REQUIRED.
+    # Accepts either x-memolm-version or x-memolm-knowledge-version
+    knowledge_version = (
+        request.headers.get("x-memolm-version")
+        or request.headers.get("x-memolm-knowledge-version")
+    )
     if not knowledge_version:
-        # No version header → skip cache entirely, go straight to LLM
         print("[MemoLM] WARNING: x-memolm-version header missing. Skipping cache.")
-        knowledge_version = None  # signals fetch_from_cache to return None immediately
+        knowledge_version = None
 
-    # Risk level is hardcoded to "low" — always require high similarity (≥ 0.95) before serving cache
-    risk_level = "low"
+    # Risk level from request or defaults to "low"
+    risk_level = request.headers.get("x-memolm-risk", "low").lower()
+
+    # Per-request cache controls
+    force_refresh = (
+        request.headers.get("x-memolm-force-refresh", "").lower() in ("true", "1", "yes")
+        or body.get("force_refresh", False)
+    )
+    cache_only = (
+        request.headers.get("x-memolm-cache-only", "").lower() in ("true", "1", "yes")
+        or body.get("cache_only", False)
+    )
+    similarity_threshold_raw = (
+        request.headers.get("x-memolm-similarity-threshold")
+        or body.get("similarity_threshold")
+    )
+    try:
+        similarity_threshold = float(similarity_threshold_raw) if similarity_threshold_raw is not None else None
+    except (ValueError, TypeError):
+        similarity_threshold = None
 
     # -----------------------------------------------------------------------
     # 1. SEMANTIC CACHE LOOKUP  (user turns only, via the context chain)
     # -----------------------------------------------------------------------
-    # The query the TTL router scores. Derived from user turns for the same
-    # reason the cache embeds only user turns: an assistant message must never
-    # become the thing we key TTL and retrieval off.
     current_query, _ = cache.user_chain(messages)
 
-    cached_result = cache.fetch_from_cache(
-        tenant_id=tenant_id,
-        provider="groq",
-        model=model,
-        messages=messages,
-        version=knowledge_version,
-        risk=risk_level
-    )
+    cached_result = None
+    if not force_refresh and knowledge_version:
+        cached_result = cache.fetch_from_cache(
+            tenant_id=tenant_id,
+            provider="groq",
+            model=model,
+            messages=messages,
+            version=knowledge_version,
+            risk=risk_level,
+            similarity_threshold=similarity_threshold,
+            return_rejection_details=True,
+        )
 
-    if cached_result:
+    if cached_result and cached_result.get("verdict") == "SAFE_CACHE_HIT":
         # Cache HIT!
         cached_response = cached_result["payload"]["response"]
         print(f"⚡ CACHE HIT! Served in ~20ms")
-        
+
         if stream:
             return StreamingResponse(
-                stream_cached_response(cached_response), 
+                stream_cached_response(cached_response),
                 media_type="text/event-stream"
             )
         else:
@@ -131,47 +146,72 @@ async def chat_completions(request: Request):
                 "id": "chatcmpl-memolm-cache",
                 "object": "chat.completion",
                 "choices": [{"message": {"role": "assistant", "content": cached_response}}],
-                "memolm_stats": cached_result # Custom metadata for the frontend
+                "memolm_stats": cached_result # Custom metadata for the frontend & SDK
             })
 
+    if cache_only:
+        # Client requested cache_only but no safe cache hit was found
+        return JSONResponse(
+            status_code=404,
+            content={
+                "error": {
+                    "message": "Cache miss and cache_only was requested.",
+                    "type": "cache_miss"
+                }
+            }
+        )
+
     # -----------------------------------------------------------------------
-    # 2. CACHE MISS -> CALL GROQ
+    # 2. CACHE MISS / SAFETY REJECTED -> CALL GROQ
     # -----------------------------------------------------------------------
-    print(f"❌ CACHE MISS. Routing to Groq...")
-    
+    print(f"❌ CACHE MISS / SAFETY REJECTED. Routing to Groq...")
+
     # Calculate how long to cache this specific question.
-    # No usable user turn (empty or multimodal-only request) → ttl 0, so the
-    # answer is served but never written to the cache.
     ttl = get_semantic_ttl(current_query, risk_level=risk_level) if current_query else 0
 
     if not stream:
         # NON-STREAMING FALLBACK
-        # full_messages → Groq needs the entire history to give a correct, contextual answer
+        t0 = time.time()
         try:
             chat_completion = await groq_client.chat.completions.create(
                 messages=full_messages,
                 model=model,
             )
         except Exception as exc:
-            # An upstream failure (bad model name, revoked key, rate limit) must
-            # not surface as an unhandled ASGI traceback. Cache stays valid, so
-            # the next request can still be served from it.
             print(f"[Groq] UPSTREAM ERROR ({type(exc).__name__}): {exc}")
             return JSONResponse(
                 status_code=502,
                 content={"error": {"message": f"Upstream provider error: {exc}", "type": "upstream_error"}},
             )
 
+        latency_ms = round((time.time() - t0) * 1000, 2)
         llm_answer = chat_completion.choices[0].message.content
 
         if ttl > 0:
-            # Only user turns are stored; qdrant_store.user_chain applies the filter
             cache.save_to_cache(
                 tenant_id, "groq", model, messages, llm_answer,
                 version=knowledge_version, ttl=ttl, risk=risk_level
             )
 
-        return chat_completion.model_dump()
+        res_data = chat_completion.model_dump()
+        if cached_result and cached_result.get("verdict") == "SAFETY_REJECTED":
+            res_data["memolm_stats"] = {
+                "verdict": "SAFETY_REJECTED",
+                "similarity": cached_result.get("similarity", 0.0),
+                "rejection_reasons": cached_result.get("rejection_reasons", []),
+                "latency_ms": latency_ms,
+                "cost_incurred": 0.005,
+                "payload": None,
+            }
+        else:
+            res_data["memolm_stats"] = {
+                "verdict": "CACHE_MISS",
+                "similarity": 0.0,
+                "latency_ms": latency_ms,
+                "cost_incurred": 0.005,
+                "payload": None,
+            }
+        return JSONResponse(res_data)
 
 
     # -----------------------------------------------------------------------
@@ -214,6 +254,92 @@ async def chat_completions(request: Request):
             )
 
     return StreamingResponse(stream_from_llm(), media_type="text/event-stream")
+
+
+# ---------------------------------------------------------------------------
+# 4. ACTIVE CACHE MANAGEMENT APIS
+# ---------------------------------------------------------------------------
+
+@app.post("/cache/invalidate")
+async def invalidate_cache_endpoint(request: Request):
+    """
+    Explicitly invalidate cached answers by tenant and/or knowledge version.
+    """
+    body = {}
+    if request.headers.get("content-type", "").startswith("application/json"):
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+
+    tenant_id = body.get("tenant_id") or request.headers.get("x-memolm-tenant")
+    version = body.get("version") or request.headers.get("x-memolm-version")
+
+    count = cache.invalidate_cache(tenant_id=tenant_id, version=version)
+    return JSONResponse({
+        "status": "ok",
+        "message": "Cache invalidated successfully",
+        "deleted_count": count,
+        "tenant_id": tenant_id,
+        "version": version,
+    })
+
+
+@app.post("/cache/inspect")
+async def inspect_cache_endpoint(request: Request):
+    """
+    Dry-run a query against Qdrant to inspect what would hit, cosine similarity,
+    and whether the Safety Gate would pass or reject, without billing an LLM call.
+    """
+    body = {}
+    if request.headers.get("content-type", "").startswith("application/json"):
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+
+    query = body.get("query")
+    messages = body.get("messages")
+    tenant_id = body.get("tenant_id") or request.headers.get("x-memolm-tenant", "default-tenant")
+    version = body.get("version") or request.headers.get("x-memolm-version")
+    risk = body.get("risk") or request.headers.get("x-memolm-risk", "low")
+    similarity_threshold = body.get("similarity_threshold")
+    if similarity_threshold is not None:
+        try:
+            similarity_threshold = float(similarity_threshold)
+        except (ValueError, TypeError):
+            similarity_threshold = None
+
+    result = cache.inspect_cache(
+        query=query,
+        messages=messages,
+        tenant_id=tenant_id,
+        version=version,
+        risk=risk,
+        similarity_threshold=similarity_threshold,
+    )
+    return JSONResponse(result)
+
+
+@app.post("/cache/seed")
+async def seed_cache_endpoint(request: Request):
+    """
+    Bulk warm-up known documentation or FAQ entries directly into the vector store.
+    """
+    body = {}
+    if request.headers.get("content-type", "").startswith("application/json"):
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+
+    items = body.get("items", [])
+    seeded_count = cache.seed_cache(items)
+    return JSONResponse({
+        "status": "ok",
+        "seeded_count": seeded_count,
+    })
+
 
 if __name__ == "__main__":
     import uvicorn
