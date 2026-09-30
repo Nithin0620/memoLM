@@ -4,4 +4,17 @@ qdrant-client
 python-dotenv
 fastapi
 uvicorn
-groq
+
+# Multi-provider layer (backend/provider/). Each integration is a separate
+# distribution so an unused provider costs nothing; langchain-core supplies the
+# shared message types the adapters convert to and from.
+langchain-core
+langchain-openai
+langchain-anthropic
+langchain-google-genai
+langchain-groq
+
+# No direct `groq` dependency. All Groq traffic goes through langchain-groq
+# (provider/groq_provider.py). If langchain-groq cannot serve a case we do not
+# fall back to the raw SDK - we fix it or escalate upstream. `groq` still
+# installs transitively as a langchain-groq dependency, which is expected.

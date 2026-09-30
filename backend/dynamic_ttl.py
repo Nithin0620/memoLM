@@ -1,7 +1,8 @@
 from functools import lru_cache
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Sequence
 
 import numpy as np
+import re
 
 from embedding.embedding import embed, embed_text
 
@@ -252,8 +253,97 @@ def _cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-9))
 
 
+# ---------------------------------------------------------------------------
+# Personal-data guard
+# ---------------------------------------------------------------------------
+# A tenant is one developer's integration, shared by all of that developer's end
+# users. That sharing is the product: 100 users asking the same FAQ question
+# should produce one LLM call, not 100. It is also the risk: the cache key carries
+# no end-user identity, so a question that varies per user ("where is my order
+# 4471?") would cache user A's answer and serve it to user B.
+#
+# So queries that look per-user are never cached at all. This is deliberately a
+# hard pattern match rather than a scoring bucket, and it runs BEFORE the
+# embedding so a personal query never becomes a retrievable vector.
+#
+# The list is intentionally generous. A false positive costs one real LLM call; a
+# false negative leaks one user's data to another. When the two conflict, this
+# leans toward over-blocking.
+
+# Standalone identifiers. 4+ consecutive digits catches order/ticket/invoice/
+# account ids; the bare 10-12 digit run catches phone numbers.
+_RE_ORDER_ID = re.compile(r"\b\d{4,}\b")
+_RE_PHONE = re.compile(r"\b(?:\+?\d[\s.-]?){9,13}\d\b")
+_RE_EMAIL = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
+
+# Possessives: "my order", "my name", "my account". Two intervening words are
+# allowed so "my latest order status" and "my current billing address" match.
+_PERSONAL_NOUNS = (
+    "order|orders|booking|bookings|reservation|ticket|tickets|"
+    "invoice|invoices|receipt|receipts|transaction|transactions|payment|payments|"
+    "account|accounts|profile|subscription|subscriptions|plan|plans|"
+    "balance|statement|statements|billing|"
+    "address|addresses|location|delivery|shipment|tracking|parcel|"
+    "appointment|appointments|schedule|"
+    "name|names|email|phone|number|age|dob|birthday|gender|occupation|"
+    "password|passwords|otp|pin|cvv|ssn|social security|"
+    "card|credit card|debit card|bank|wallet|"
+    "salary|employment|employer|tax|loan|mortgage|"
+    "prescription|diagnosis|medical record|patient|"
+    "file|files|folder|dashboard|workspace|project|repository"
+)
+_RE_POSSESSIVE = re.compile(
+    r"\b(?:my|mine|our)\s+(?:\w+\s+){0,2}(?:" + _PERSONAL_NOUNS + r")\b",
+    re.IGNORECASE,
+)
+
+# "the name on my account", "this user's email" — a possessive noun of any kind.
+_RE_USER_REF = re.compile(
+    r"\b(?:this|that|the|each|every|another|other|a|my)\s+(?:user|customer|"
+    r"client|patient|member|account|profile|person)'?s?\b",
+    re.IGNORECASE,
+)
+
+# Matches MAX_CONTEXT_MESSAGES in embedding/context_chain.py — only the last two
+# prior turns actually contribute to the retrieval vector, so only they can
+# poison it.
+MAX_PERSONAL_CONTEXT = 2
+
+
+def contains_personal_data(
+    text: str, prior_messages: Optional[Sequence[str]] = None
+) -> bool:
+    """True when the query (or recent context) is per-user and must not be cached.
+
+    `prior_messages` are the prior user turns, which contribute 20% of the
+    retrieval vector (embedding/context_chain.py). A personal turn in the recent
+    history is enough to poison the current turn's vector, so both are checked.
+    """
+    if text and _looks_personal(text):
+        return True
+
+    for prior in list(prior_messages or [])[-MAX_PERSONAL_CONTEXT:]:
+        if isinstance(prior, str) and _looks_personal(prior):
+            return True
+    return False
+
+
+def _looks_personal(text: str) -> bool:
+    return bool(
+        _RE_EMAIL.search(text)
+        or _RE_ORDER_ID.search(text)
+        or _RE_PHONE.search(text)
+        or _RE_POSSESSIVE.search(text)
+        or _RE_USER_REF.search(text)
+    )
+
+
 def get_semantic_ttl(user_query: str, risk_level: Optional[str] = None) -> int:
-    
+    # Per-user data is never cached, at any TTL. Checked first so the decision is
+    # unconditional and cannot be outvoted by the bucket scoring below.
+    if contains_personal_data(user_query):
+        return 0
+
     if risk_level is not None and risk_level.lower() == "high":
         return 0
 

@@ -6,11 +6,17 @@ from typing import AsyncGenerator
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
-from groq import AsyncGroq
 from dotenv import load_dotenv
 
 import database.qdrant_store as cache
-from dynamic_ttl import get_semantic_ttl
+from dynamic_ttl import get_semantic_ttl, contains_personal_data
+from provider import (
+    ProviderError,
+    ProviderNotConfigured,
+    ProviderNotFound,
+    list_providers,
+    resolve_provider,
+)
 
 # Windows consoles default to cp1252 and cannot encode the Unicode used in the
 # log lines below; a failed print would surface as a 500 on a healthy request.
@@ -22,10 +28,10 @@ for _stream in (sys.stdout, sys.stderr):
 
 load_dotenv()
 
-# Upstream model. Configurable because Groq model access is per-API-key: a key
-# without access to the configured model fails with a 404 model_not_found.
-# Verify yours with:  curl https://api.groq.com/openai/v1/models -H "Authorization: Bearer $GROQ_API_KEY"
-DEFAULT_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")
+# Which upstream to use when a request does not name one. A request may choose a
+# different provider, but never a key or a base URL: those are resolved from this
+# process's own environment by provider.resolve_provider.
+DEFAULT_PROVIDER = (os.getenv("MEMOLM_DEFAULT_PROVIDER") or "groq").strip().lower()
 
 app = FastAPI(title="MemoLM Gateway", version="1.0")
 
@@ -41,10 +47,6 @@ app.add_middleware(
 @app.on_event("startup")
 async def initialize_cache() -> None:
     cache.ensure_collection()
-
-
-# Initialize the Groq client (our fallback LLM)
-groq_client = AsyncGroq()
 
 
 async def stream_cached_response(cached_text: str) -> AsyncGenerator[str, None]:
@@ -76,17 +78,49 @@ async def stream_cached_response(cached_text: str) -> AsyncGenerator[str, None]:
 async def chat_completions(request: Request):
     """
     Drop-in replacement for OpenAI/Groq API.
-    Intercepts the request -> Checks Qdrant Cache -> Returns or forwards to Groq.
+    Intercepts the request -> Checks Qdrant Cache -> Returns or forwards upstream.
     """
     body = await request.json()
-    
+
     messages = body.get("messages", [])
-    model = body.get("model") or DEFAULT_MODEL
     stream = body.get("stream", False)
 
-    # Groq gets the ENTIRE conversation so it fully understands what was said 20
-    # turns ago — that is what gives correct answers.
-    full_messages = messages            # full history → goes to Groq
+    # The provider is chosen per request. The API key and base URL are never
+    # accepted from the client — they are read from this process's own
+    # environment, so a developer's key never leaves the backend.
+    requested_provider = request.headers.get("x-memolm-provider") or body.get("provider")
+    try:
+        provider = resolve_provider(requested_provider, DEFAULT_PROVIDER)
+    except (ProviderNotFound, ProviderNotConfigured, ProviderError) as exc:
+        print(f"[MemoLM] REJECTED provider routing: {exc}")
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": {
+                    "message": str(exc),
+                    "type": "provider_unavailable",
+                    "available_providers": list_providers(),
+                }
+            },
+        )
+
+    model = body.get("model") or provider.config.model
+    temperature = body.get("temperature")
+    if temperature is not None:
+        try:
+            temperature = float(temperature)
+        except (ValueError, TypeError):
+            temperature = None
+    max_tokens = body.get("max_tokens")
+    if max_tokens is not None:
+        try:
+            max_tokens = int(max_tokens)
+        except (ValueError, TypeError):
+            max_tokens = None
+
+    # The provider gets the ENTIRE conversation so it fully understands what was
+    # said 20 turns ago — that is what gives correct answers.
+    full_messages = messages
 
     # MemoLM Custom Headers (for Safety Gate)
     tenant_id = request.headers.get("x-memolm-tenant", "default-tenant")
@@ -125,13 +159,19 @@ async def chat_completions(request: Request):
     # -----------------------------------------------------------------------
     # 1. SEMANTIC CACHE LOOKUP  (user turns only, via the context chain)
     # -----------------------------------------------------------------------
-    current_query, _ = cache.user_chain(messages)
+    current_query, prior_user_turns = cache.user_chain(messages)
+
+    # All users of one developer share a tenant, so the cache holds no per-user
+    # identity. A question that varies per user is therefore never read from or
+    # written to the cache — otherwise one user's answer could be served to
+    # another. See dynamic_ttl.contains_personal_data.
+    is_personal = contains_personal_data(current_query, prior_user_turns)
 
     cached_result = None
-    if not force_refresh and knowledge_version:
+    if not force_refresh and knowledge_version and not is_personal:
         cached_result = cache.fetch_from_cache(
             tenant_id=tenant_id,
-            provider="groq",
+            provider=provider.name,
             model=model,
             messages=messages,
             version=knowledge_version,
@@ -139,6 +179,8 @@ async def chat_completions(request: Request):
             similarity_threshold=similarity_threshold,
             return_rejection_details=True,
         )
+    elif is_personal:
+        print("[MemoLM] Personal-data query — bypassing cache entirely.")
 
     if cached_result and cached_result.get("verdict") == "SAFE_CACHE_HIT":
         # Cache HIT!
@@ -171,9 +213,9 @@ async def chat_completions(request: Request):
         )
 
     # -----------------------------------------------------------------------
-    # 2. CACHE MISS / SAFETY REJECTED -> CALL GROQ
+    # 2. CACHE MISS / SAFETY REJECTED -> CALL THE UPSTREAM PROVIDER
     # -----------------------------------------------------------------------
-    print(f"❌ CACHE MISS / SAFETY REJECTED. Routing to Groq...")
+    print(f"❌ CACHE MISS / SAFETY REJECTED. Routing to {provider.name}...")
 
     # Calculate how long to cache this specific question.
     ttl = get_semantic_ttl(current_query, risk_level=risk_level) if current_query else 0
@@ -182,27 +224,36 @@ async def chat_completions(request: Request):
         # NON-STREAMING FALLBACK
         t0 = time.time()
         try:
-            chat_completion = await groq_client.chat.completions.create(
-                messages=full_messages,
+            res_data = await provider.complete(
                 model=model,
+                messages=full_messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
             )
         except Exception as exc:
-            print(f"[Groq] UPSTREAM ERROR ({type(exc).__name__}): {exc}")
+            print(f"[{provider.name}] UPSTREAM ERROR ({type(exc).__name__}): {exc}")
             return JSONResponse(
                 status_code=502,
-                content={"error": {"message": f"Upstream provider error: {exc}", "type": "upstream_error"}},
+                content={
+                    "error": {
+                        # Upstream SDKs embed request context in exception text.
+                        # It is logged in full above; only a summary goes to the client.
+                        "message": f"Upstream provider '{provider.name}' error: {type(exc).__name__}",
+                        "type": "upstream_error",
+                        "provider": provider.name,
+                    }
+                },
             )
 
         latency_ms = round((time.time() - t0) * 1000, 2)
-        llm_answer = chat_completion.choices[0].message.content
+        llm_answer = res_data["choices"][0]["message"]["content"]
 
         if ttl > 0:
             cache.save_to_cache(
-                tenant_id, "groq", model, messages, llm_answer,
+                tenant_id, provider.name, model, messages, llm_answer,
                 version=knowledge_version, ttl=ttl, risk=risk_level
             )
 
-        res_data = chat_completion.model_dump()
         if cached_result and cached_result.get("verdict") == "SAFETY_REJECTED":
             res_data["memolm_stats"] = {
                 "verdict": "SAFETY_REJECTED",
@@ -227,38 +278,37 @@ async def chat_completions(request: Request):
     # 3. STREAMING FALLBACK (Server-Sent Events)
     # -----------------------------------------------------------------------
     async def stream_from_llm():
-        # full_messages → Groq needs the entire history to give a correct, contextual answer
+        # full history -> the provider needs the entire conversation to give a
+        # correct, contextual answer
+        accumulated_answer = ""
+
         try:
-            chat_stream = await groq_client.chat.completions.create(
-                messages=full_messages,
+            async for chunk in provider.stream(
                 model=model,
-                stream=True,
-            )
+                messages=full_messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            ):
+                text = chunk["choices"][0]["delta"].get("content")
+                if not text:
+                    continue
+                yield f"data: {json.dumps(chunk)}\n\n"
+                accumulated_answer += text
         except Exception as exc:
             # The response has already started, so the status code is locked in.
             # Emit a terminal error frame the client can detect, then close cleanly
             # instead of tearing down the ASGI task with a traceback.
-            print(f"[Groq] UPSTREAM ERROR ({type(exc).__name__}): {exc}")
-            yield f"data: {json.dumps({'error': {'message': f'Upstream provider error: {exc}', 'type': 'upstream_error'}})}\n\n"
+            print(f"[{provider.name}] UPSTREAM ERROR ({type(exc).__name__}): {exc}")
+            yield f"data: {json.dumps({'error': {'message': f'Upstream provider error: {type(exc).__name__}', 'type': 'upstream_error', 'provider': provider.name}})}\n\n"
             yield "data: [DONE]\n\n"
             return
-
-        accumulated_answer = ""
-
-        async for chunk in chat_stream:
-            # Yield the chunk directly to the user
-            yield f"data: {chunk.model_dump_json()}\n\n"
-
-            # Save the chunk so we can cache the full answer at the end
-            if chunk.choices[0].delta.content is not None:
-                accumulated_answer += chunk.choices[0].delta.content
 
         yield "data: [DONE]\n\n"
 
         # After the stream finishes, save to Qdrant (user turns only)
         if ttl > 0 and accumulated_answer.strip():
             cache.save_to_cache(
-                tenant_id, "groq", model, messages, accumulated_answer,
+                tenant_id, provider.name, model, messages, accumulated_answer,
                 version=knowledge_version, ttl=ttl, risk=risk_level
             )
 

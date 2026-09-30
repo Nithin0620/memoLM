@@ -27,12 +27,8 @@ Application (OpenAI / Gemini SDK or MemoLM SDK)
                      │
                      ▼
              MemoLM Gateway (POST /v1/chat/completions)
-                     │
-         ┌───────────▼───────────┐
-         │      Exact Cache      │ ──[ HIT ]──► Return (~5ms, $0)
-         │        (Redis)        │
-         └───────────┬───────────┘
-                     │ [ MISS ]
+                     |
+                     │ 
          ┌───────────▼───────────┐
          │    Semantic Search    │
          │   (Qdrant / Vector)   │
