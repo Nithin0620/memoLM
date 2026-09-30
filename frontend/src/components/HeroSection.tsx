@@ -51,11 +51,18 @@ export function HeroSection() {
         {/* Dual Actions */}
         <div className="mt-10 flex flex-wrap items-center justify-center gap-3">
           <a
+            href="/chat"
+            className="flex items-center gap-2 rounded-lg bg-indigo-600 px-5 py-2.5 text-xs font-semibold text-white hover:bg-indigo-500 transition-all shadow-[0_0_20px_rgba(99,102,241,0.3)]"
+          >
+            <span>Open Realtime Chat (SDK)</span>
+            <ArrowRight className="h-3.5 w-3.5" />
+          </a>
+
+          <a
             href="#demo"
             className="flex items-center gap-2 rounded-lg bg-white px-5 py-2.5 text-xs font-semibold text-black hover:bg-zinc-200 transition-all shadow-[0_0_20px_rgba(255,255,255,0.15)]"
           >
             <span>Launch Interactive Simulator</span>
-            <ArrowRight className="h-3.5 w-3.5" />
           </a>
 
           <a

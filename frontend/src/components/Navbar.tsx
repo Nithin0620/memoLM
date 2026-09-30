@@ -55,19 +55,23 @@ export function Navbar() {
 
         {/* Navigation Links */}
         <nav className="hidden lg:flex items-center gap-7 text-xs font-mono text-zinc-400">
-          <a href="#how-it-works" className="hover:text-zinc-200 transition-colors">
+          <a href="/#how-it-works" className="hover:text-zinc-200 transition-colors">
             Architecture
           </a>
-          <a href="#demo" className="hover:text-zinc-200 transition-colors">
+          <a href="/#demo" className="hover:text-zinc-200 transition-colors">
             Interactive Console
           </a>
-          <a href="#features" className="hover:text-zinc-200 transition-colors">
+          <a href="/chat" className="text-indigo-400 font-semibold hover:text-indigo-300 transition-colors flex items-center gap-1">
+            <span className="h-1.5 w-1.5 rounded-full bg-indigo-400 animate-pulse" />
+            Live Chat Page
+          </a>
+          <a href="/#features" className="hover:text-zinc-200 transition-colors">
             Safety Gate
           </a>
-          <a href="#quickstart" className="hover:text-zinc-200 transition-colors">
+          <a href="/#quickstart" className="hover:text-zinc-200 transition-colors">
             Quickstart
           </a>
-          <a href="#roi-calculator" className="hover:text-zinc-200 transition-colors">
+          <a href="/#roi-calculator" className="hover:text-zinc-200 transition-colors">
             Calculator
           </a>
         </nav>
@@ -85,10 +89,10 @@ export function Navbar() {
           </a>
 
           <a
-            href="#demo"
-            className="flex items-center gap-1.5 rounded-md bg-white px-3 py-1.2 text-xs font-medium text-black hover:bg-zinc-200 transition-colors shadow-[0_0_15px_rgba(255,255,255,0.15)]"
+            href="/chat"
+            className="flex items-center gap-1.5 rounded-md bg-indigo-600 px-3 py-1.2 text-xs font-medium text-white hover:bg-indigo-500 transition-colors shadow-[0_0_15px_rgba(99,102,241,0.25)]"
           >
-            <span>Live Console</span>
+            <span>Live Chat (SDK)</span>
             <ArrowUpRight className="h-3 w-3" />
           </a>
         </div>

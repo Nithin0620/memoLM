@@ -4,6 +4,7 @@ import sys
 import time
 from typing import AsyncGenerator
 from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from groq import AsyncGroq
 from dotenv import load_dotenv
@@ -27,6 +28,14 @@ load_dotenv()
 DEFAULT_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")
 
 app = FastAPI(title="MemoLM Gateway", version="1.0")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.on_event("startup")
