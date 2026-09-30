@@ -1,7 +1,17 @@
 "use client";
 
 import React, { useState } from "react";
-import { ArrowRight, Check, Copy, Shield, Terminal, Zap, Lock, Gauge, Sparkles } from "lucide-react";
+import {
+  ArrowRight,
+  Check,
+  Copy,
+  Shield,
+  Terminal,
+  Zap,
+  Lock,
+  Gauge,
+  Sparkles,
+} from "lucide-react";
 
 export function HeroSection() {
   const [copied, setCopied] = useState<string | null>(null);
@@ -28,24 +38,23 @@ export function HeroSection() {
       <div className="pointer-events-none absolute -top-40 left-1/2 -z-10 h-[500px] w-[800px] -translate-x-1/2 bg-gradient-to-b from-indigo-500/15 via-purple-500/5 to-transparent blur-3xl opacity-60" />
 
       <div className="relative mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 text-center">
-        {/* Subtle pill badge */}
-        <div className="inline-flex items-center gap-2 rounded-full border border-white/[0.08] bg-white/[0.03] px-3.5 py-1 text-xs font-mono text-zinc-300 backdrop-blur-xl shadow-inner">
-          <span className="h-1.5 w-1.5 rounded-full bg-indigo-400 animate-pulse" />
-          <span>Intelligent LLM Response Firewall</span>
-          <span className="text-zinc-600">/</span>
-          <span className="text-zinc-400">Zero-downtime invalidation</span>
-        </div>
-
         {/* Master Headline - Crisp & Authoritative */}
         <h1 className="mt-8 text-4xl sm:text-6xl lg:text-7xl font-bold tracking-tight text-white max-w-5xl mx-auto leading-[1.08]">
           Never pay twice for an LLM call.
           <br />
-          <span className="text-zinc-400 font-medium">Never serve a stale answer.</span>
+          <span className="text-zinc-400 font-medium">
+            Never serve a stale answer.
+          </span>
         </h1>
 
         {/* Technical Subheadline */}
         <p className="mx-auto mt-6 max-w-2xl text-base sm:text-lg text-zinc-400 font-normal leading-relaxed">
-          Blind semantic similarity is dangerous in production. MemoLM sits between your application and upstream LLMs (Groq, OpenAI, Gemini), subjecting every candidate match to an explainable <strong className="text-zinc-200 font-medium">Safety Gate</strong> before returning it in <span className="text-emerald-400 font-mono font-medium">~18ms</span>.
+          Blind semantic similarity is dangerous in production. MemoLM sits
+          between your application and upstream LLMs (Groq, OpenAI, Gemini),
+          subjecting every candidate match to an explainable{" "}
+          <strong className="text-zinc-200 font-medium">Safety Gate</strong>{" "}
+          before returning it in{" "}
+          <span className="text-emerald-400 font-mono font-medium">~18ms</span>.
         </p>
 
         {/* Dual Actions */}
@@ -83,7 +92,9 @@ export function HeroSection() {
                 <span className="h-2.5 w-2.5 rounded-full bg-[#ff5f56]" />
                 <span className="h-2.5 w-2.5 rounded-full bg-[#ffbd2e]" />
                 <span className="h-2.5 w-2.5 rounded-full bg-[#27c93f]" />
-                <span className="ml-2 font-mono text-[11px] text-zinc-500">terminal</span>
+                <span className="ml-2 font-mono text-[11px] text-zinc-500">
+                  terminal
+                </span>
               </div>
               <div className="flex items-center gap-1 rounded bg-[#030304] p-0.5 border border-white/[0.06]">
                 {(["npm", "pip", "curl"] as const).map((tab) => (
@@ -126,27 +137,51 @@ export function HeroSection() {
         {/* Hardware / Engine Metrics Strip */}
         <div className="mt-16 grid grid-cols-2 md:grid-cols-4 gap-3 max-w-5xl mx-auto">
           <div className="rounded-xl border border-white/[0.06] bg-white/[0.015] p-4 text-center backdrop-blur-md">
-            <div className="font-mono text-2xl lg:text-3xl font-bold text-white tracking-tight">~18ms</div>
-            <div className="mt-1 text-xs text-zinc-400 font-medium">Safe Hit Latency</div>
-            <div className="text-[11px] text-zinc-400 font-mono mt-0.5">vs 1,200ms cold LLM</div>
+            <div className="font-mono text-2xl lg:text-3xl font-bold text-white tracking-tight">
+              ~18ms
+            </div>
+            <div className="mt-1 text-xs text-zinc-400 font-medium">
+              Safe Hit Latency
+            </div>
+            <div className="text-[11px] text-zinc-400 font-mono mt-0.5">
+              vs 1,200ms cold LLM
+            </div>
           </div>
 
           <div className="rounded-xl border border-white/[0.06] bg-white/[0.015] p-4 text-center backdrop-blur-md">
-            <div className="font-mono text-2xl lg:text-3xl font-bold text-emerald-400 tracking-tight">100%</div>
-            <div className="mt-1 text-xs text-zinc-400 font-medium">Version Isolation</div>
-            <div className="text-[11px] text-zinc-400 font-mono mt-0.5">Zero stale docs served</div>
+            <div className="font-mono text-2xl lg:text-3xl font-bold text-emerald-400 tracking-tight">
+              100%
+            </div>
+            <div className="mt-1 text-xs text-zinc-400 font-medium">
+              Version Isolation
+            </div>
+            <div className="text-[11px] text-zinc-400 font-mono mt-0.5">
+              Zero stale docs served
+            </div>
           </div>
 
           <div className="rounded-xl border border-white/[0.06] bg-white/[0.015] p-4 text-center backdrop-blur-md">
-            <div className="font-mono text-2xl lg:text-3xl font-bold text-indigo-400 tracking-tight">&gt;85%</div>
-            <div className="mt-1 text-xs text-zinc-400 font-medium">Token Reductions</div>
-            <div className="text-[11px] text-zinc-400 font-mono mt-0.5">On repeated semantics</div>
+            <div className="font-mono text-2xl lg:text-3xl font-bold text-indigo-400 tracking-tight">
+              &gt;85%
+            </div>
+            <div className="mt-1 text-xs text-zinc-400 font-medium">
+              Token Reductions
+            </div>
+            <div className="text-[11px] text-zinc-400 font-mono mt-0.5">
+              On repeated semantics
+            </div>
           </div>
 
           <div className="rounded-xl border border-white/[0.06] bg-white/[0.015] p-4 text-center backdrop-blur-md">
-            <div className="font-mono text-2xl lg:text-3xl font-bold text-zinc-200 tracking-tight">Fail-Open</div>
-            <div className="mt-1 text-xs text-zinc-400 font-medium">Zero Outage Guarantee</div>
-            <div className="text-[11px] text-zinc-400 font-mono mt-0.5">Automatic upstream direct</div>
+            <div className="font-mono text-2xl lg:text-3xl font-bold text-zinc-200 tracking-tight">
+              Fail-Open
+            </div>
+            <div className="mt-1 text-xs text-zinc-400 font-medium">
+              Zero Outage Guarantee
+            </div>
+            <div className="text-[11px] text-zinc-400 font-mono mt-0.5">
+              Automatic upstream direct
+            </div>
           </div>
         </div>
       </div>

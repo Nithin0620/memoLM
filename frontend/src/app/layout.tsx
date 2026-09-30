@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
+  metadataBase: new URL("https://memolm.ssh.net.in"),
   title: "MemoLM — Intelligent LLM Response Firewall & Safe Semantic Cache",
   description:
     "Drop-in OpenAI & Groq compatible proxy that prevents unnecessary LLM calls by serving cached answers only when they are semantically relevant and verified safe to reuse.",
@@ -14,6 +15,14 @@ export const metadata: Metadata = {
     "qdrant",
     "groq",
   ],
+  openGraph: {
+    title: "MemoLM — Intelligent LLM Response Firewall & Safe Semantic Cache",
+    description:
+      "Drop-in OpenAI & Groq compatible proxy with sub-20ms verified semantic caching and zero stale answer leaks.",
+    url: "https://memolm.ssh.net.in",
+    siteName: "MemoLM",
+    type: "website",
+  },
 };
 
 export default function RootLayout({

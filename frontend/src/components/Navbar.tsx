@@ -2,8 +2,9 @@
 
 import React, { useState, useEffect } from "react";
 import Link from "next/link";
+import Image from "next/image";
+import logo from "../assets/image.png";
 import {
-  Shield,
   Github,
   ArrowUpRight,
   Menu,
@@ -70,60 +71,28 @@ export function Navbar() {
           {/* Brand & Status */}
           <div className="flex items-center gap-3.5">
             <Link href="/" className="flex items-center gap-2.5 group">
-              {/* Premium Icon Badge */}
-              <div className="relative flex h-8 w-8 items-center justify-center rounded-xl bg-gradient-to-b from-zinc-800 via-zinc-900 to-black border border-white/[0.12] shadow-[inset_0_1px_0_0_rgba(255,255,255,0.2),0_2px_8px_rgba(0,0,0,0.6)] group-hover:border-indigo-400/50 group-hover:shadow-[0_0_16px_rgba(99,102,241,0.35)] transition-all duration-200">
-                <Shield className="h-4 w-4 text-indigo-400 group-hover:scale-105 transition-transform duration-200" />
-                <div className="absolute inset-0 rounded-xl bg-indigo-500/10 opacity-0 group-hover:opacity-100 transition-opacity" />
+              <div className="h-8 w-8 overflow-hidden rounded-full">
+                <Image
+                  src={logo}
+                  alt=""
+                  width={32}
+                  height={32}
+                  className="h-full w-full rounded-full object-cover transition-transform duration-200 group-hover:scale-105"
+                />
               </div>
 
               {/* Title & Version */}
               <div className="flex items-center gap-2">
                 <span className="font-semibold text-[15px] tracking-tight text-white group-hover:text-zinc-100 transition-colors">
-                  memo<span className="text-indigo-400 font-mono font-normal">LM</span>
-                </span>
-                <span className="rounded-md px-1.5 py-0.5 text-[10px] font-mono text-zinc-400 bg-white/[0.04] border border-white/[0.07] tracking-wider">
-                  v1.0
+                  memo
+                  <span className="text-indigo-400 font-mono font-normal">
+                    LM
+                  </span>
                 </span>
               </div>
             </Link>
 
-            <div className="hidden sm:block h-3.5 w-px bg-white/[0.08]" />
-
             {/* Live Gateway Indicator */}
-            <div
-              className="hidden sm:flex items-center gap-2 rounded-full border border-white/[0.06] bg-black/40 px-2.5 py-1 text-[11px] font-mono text-zinc-400 hover:border-white/[0.12] transition-colors"
-              title={
-                gatewayOnline === true
-                  ? "Gateway Online: http://127.0.0.1:8000"
-                  : "Gateway Offline (Simulated Mode)"
-              }
-            >
-              <span className="relative flex h-1.5 w-1.5">
-                {gatewayOnline === true && (
-                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
-                )}
-                <span
-                  className={`relative inline-flex rounded-full h-1.5 w-1.5 ${
-                    gatewayOnline === true
-                      ? "bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.9)]"
-                      : "bg-amber-400 shadow-[0_0_6px_rgba(251,191,36,0.6)]"
-                  }`}
-                />
-              </span>
-              <span className="text-zinc-300 text-[10.5px]">
-                {gatewayOnline === true ? (
-                  <>
-                    <span className="text-zinc-400">gateway:</span>{" "}
-                    <span className="text-emerald-400 font-semibold">online</span>
-                  </>
-                ) : (
-                  <>
-                    <span className="text-zinc-400">gateway:</span>{" "}
-                    <span className="text-amber-400">simulated</span>
-                  </>
-                )}
-              </span>
-            </div>
           </div>
 
           {/* Desktop Navigation Links */}
@@ -181,7 +150,11 @@ export function Navbar() {
               aria-label="Toggle mobile menu"
               className="flex lg:hidden p-1.5 rounded-xl border border-white/[0.08] bg-white/[0.03] text-zinc-400 hover:text-white hover:bg-white/[0.06] transition-colors"
             >
-              {mobileMenuOpen ? <X className="h-4.5 w-4.5" /> : <Menu className="h-4.5 w-4.5" />}
+              {mobileMenuOpen ? (
+                <X className="h-4.5 w-4.5" />
+              ) : (
+                <Menu className="h-4.5 w-4.5" />
+              )}
             </button>
           </div>
         </div>
@@ -199,7 +172,10 @@ export function Navbar() {
                       : "bg-amber-400"
                   }`}
                 />
-                <span>Gateway: {gatewayOnline === true ? "Online (8000)" : "Simulated"}</span>
+                <span>
+                  Gateway:{" "}
+                  {gatewayOnline === true ? "Online (8000)" : "Simulated"}
+                </span>
               </div>
               <span className="text-[10px] text-zinc-500">FastAPI</span>
             </div>
