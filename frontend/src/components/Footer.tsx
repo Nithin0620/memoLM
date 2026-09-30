@@ -85,6 +85,15 @@ export function Footer() {
             <ul className="mt-3 space-y-2 text-zinc-400 text-xs font-sans">
               <li>
                 <a
+                  href="https://memolm.ssh.net.in"
+                  className="flex items-center gap-1.5 hover:text-white transition-colors"
+                >
+                  <Shield className="h-3.5 w-3.5 text-indigo-400" />
+                  <span>Live App (memolm.ssh.net.in)</span>
+                </a>
+              </li>
+              <li>
+                <a
                   href="https://github.com/Nithin0620/memoLM"
                   target="_blank"
                   rel="noreferrer"
