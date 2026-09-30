@@ -1,4 +1,4 @@
-﻿"""
+"""
 Shared plumbing for every upstream LLM provider.
 """
 import time
@@ -52,7 +52,12 @@ class BaseLLMProvider(ABC):
         """Instantiate this provider's LangChain chat model."""
 
     def _get_chat_model(self, model: str, api_key: Optional[str] = None, base_url: Optional[str] = None) -> Any:
-        effective_key = (api_key or "").strip() or self.config.api_key
+        candidate_key = (api_key or "").strip()
+        if candidate_key and not candidate_key.startswith("memo-") and candidate_key != "memo-key":
+            effective_key = candidate_key
+        else:
+            effective_key = self.config.api_key
+
         effective_base_url = (base_url or "").strip() or self.config.base_url
         if not effective_key:
             raise ProviderNotConfigured(

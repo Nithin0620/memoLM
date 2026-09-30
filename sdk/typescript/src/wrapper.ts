@@ -50,7 +50,7 @@ export interface WrapOpenAIOptions extends MemoLMClientConfig {
  * import { wrapOpenAI } from "@memolm/sdk";
  *
  * const openai = wrapOpenAI(new OpenAI(), {
- *   baseURL: "http://localhost:8000",
+ *   baseURL: "https://memolm.onrender.com",
  *   knowledgeVersion: "v12"
  * });
  *
@@ -64,7 +64,7 @@ export function wrapOpenAI<T extends { chat: { completions: { create: (...args: 
   openaiClient: T,
   options: WrapOpenAIOptions = {}
 ): T & { memolm: MemoLM; cache: Cache; getSessionMetrics: () => SessionMetrics } {
-  const baseURL = options.gatewayURL || options.baseURL || "http://localhost:8000";
+  const baseURL = options.gatewayURL || options.baseURL || "https://memolm.onrender.com";
   const fallbackToUpstream = options.fallbackToUpstream ?? true;
 
   const memolm = new MemoLM({

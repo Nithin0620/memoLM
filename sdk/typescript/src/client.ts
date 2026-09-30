@@ -98,7 +98,7 @@ export class MemoLM {
   public cache: Cache;
 
   constructor(config: MemoLMClientConfig = {}) {
-    let base = config.baseURL || "http://localhost:8000";
+    let base = config.baseURL || "https://memolm.onrender.com";
     base = base.replace(/\/+$/, "");
     this.baseURL = base;
 

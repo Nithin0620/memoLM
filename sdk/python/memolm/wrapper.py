@@ -150,7 +150,7 @@ def wrap_openai(
     Intercepts `client.chat.completions.create` to route requests through MemoLM
     with safety caching and optional fail-open fallback.
     """
-    effective_url = base_url or gateway_url or "http://localhost:8000"
+    effective_url = base_url or gateway_url or "https://memolm.onrender.com"
 
     # Detect whether client is async
     is_async = getattr(openai_client, "_is_async", False) is True or (

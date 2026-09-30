@@ -11,7 +11,7 @@ export function ArchitectureSection() {
       id: 0,
       title: "01. Request Interception",
       badge: "OpenAI-Compatible",
-      description: "Inbound requests target http://localhost:8000/v1/chat/completions. The gateway strips MemoLM headers and passes prompts down-pipeline.",
+      description: "Inbound requests target https://memolm.onrender.com/v1/chat/completions. The gateway strips MemoLM headers and passes prompts down-pipeline.",
       icon: Layers,
     },
     {

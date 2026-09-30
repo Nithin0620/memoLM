@@ -1,4 +1,4 @@
-﻿import json
+import json
 import os
 import sys
 import time
@@ -63,11 +63,19 @@ async def chat_completions(request: Request):
     messages = body.get("messages", [])
     stream = body.get("stream", False)
 
-    auth_header = request.headers.get("authorization", "")
-    client_api_key = None
-    if auth_header.lower().startswith("bearer "):
-        client_api_key = auth_header[7:].strip()
-    client_api_key = client_api_key or request.headers.get("x-memolm-api-key") or body.get("api_key")
+    # Check for upstream-specific key or genuine provider key
+    upstream_key = request.headers.get("x-memolm-upstream-api-key") or body.get("upstream_api_key")
+    if not upstream_key:
+        auth_header = request.headers.get("authorization", "")
+        raw_key = auth_header[7:].strip() if auth_header.lower().startswith("bearer ") else None
+        raw_key = raw_key or request.headers.get("x-memolm-api-key") or body.get("api_key")
+        # Only treat as upstream LLM key if it matches real provider format
+        if raw_key and (raw_key.startswith("gsk_") or raw_key.startswith("sk-") or raw_key.startswith("AIza")):
+            upstream_key = raw_key
+        else:
+            upstream_key = None
+
+    client_api_key = upstream_key
     client_base_url = request.headers.get("x-memolm-base-url") or body.get("base_url")
 
     requested_provider = request.headers.get("x-memolm-provider") or body.get("provider")
@@ -325,6 +333,151 @@ async def seed_cache_endpoint(request: Request):
         "seeded_count": seeded_count,
     })
 
+@app.post("/groq/direct")
+@app.post("/v1/groq/direct")
+async def groq_direct_endpoint(request: Request):
+    """Direct upstream Groq completion bypassing all caching."""
+    body = await request.json()
+    messages = body.get("messages", [])
+    model = body.get("model") or "openai/gpt-oss-20b"
+    temperature = body.get("temperature", 0.7)
+    max_tokens = body.get("max_tokens")
+
+    try:
+        provider = resolve_provider("groq", DEFAULT_PROVIDER)
+        t0 = time.time()
+        res_data = await provider.complete(
+            model=model,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+        latency_ms = round((time.time() - t0) * 1000, 2)
+        content = res_data["choices"][0]["message"]["content"]
+        tokens = res_data.get("usage", {}).get("total_tokens", 350)
+        cost_usd = round(tokens * 0.00001, 5)
+
+        return JSONResponse({
+            "status": "ok",
+            "content": content,
+            "model": model,
+            "latency_ms": latency_ms,
+            "tokens_billed": tokens,
+            "cost_usd": cost_usd,
+            "raw": res_data,
+        })
+    except Exception as exc:
+        return JSONResponse(
+            status_code=500,
+            content={"error": str(exc), "type": "groq_direct_error"},
+        )
+
+@app.post("/v1/compare")
+@app.post("/compare")
+async def compare_endpoint(request: Request):
+    """Executes prompt on MemoLM Gateway and Direct Groq in parallel for real side-by-side comparison."""
+    import asyncio
+    body = await request.json()
+    messages = body.get("messages", [])
+    model = body.get("model") or "openai/gpt-oss-20b"
+    tenant_id = body.get("tenant_id") or request.headers.get("x-memolm-tenant", "default-tenant")
+    version = body.get("version") or request.headers.get("x-memolm-version", "v12")
+    risk = body.get("risk") or request.headers.get("x-memolm-risk", "low")
+    similarity_threshold = body.get("similarity_threshold")
+    force_refresh = body.get("force_refresh", False)
+
+    # 1. Run MemoLM Gateway pass
+    async def run_memolm():
+        t0 = time.time()
+        current_query, _ = cache.user_chain(messages)
+        cached_result = None
+        if not force_refresh and version:
+            cached_result = cache.fetch_from_cache(
+                tenant_id=tenant_id,
+                provider="groq",
+                model=model,
+                messages=messages,
+                version=version,
+                risk=risk,
+                similarity_threshold=similarity_threshold,
+                return_rejection_details=True,
+            )
+
+        if cached_result and cached_result.get("verdict") == "SAFE_CACHE_HIT":
+            latency_ms = round((time.time() - t0) * 1000, 2)
+            return {
+                "content": cached_result["payload"]["response"],
+                "latency_ms": latency_ms,
+                "cost_usd": 0.0,
+                "tokens_billed": 0,
+                "verdict": "SAFE_CACHE_HIT",
+                "similarity": cached_result.get("similarity", 0.98),
+                "rejection_reasons": [],
+            }
+
+        # Cache miss or safety rejected -> Call Groq and optionally cache
+        provider = resolve_provider("groq", DEFAULT_PROVIDER)
+        res_data = await provider.complete(model=model, messages=messages)
+        latency_ms = round((time.time() - t0) * 1000, 2)
+        llm_answer = res_data["choices"][0]["message"]["content"]
+        tokens = res_data.get("usage", {}).get("total_tokens", 350)
+        cost_usd = round(tokens * 0.00001, 5)
+
+        ttl = get_semantic_ttl(current_query, risk_level=risk) if current_query else 0
+        if ttl > 0:
+            cache.save_to_cache(
+                tenant_id, "groq", model, messages, llm_answer,
+                version=version, ttl=ttl, risk=risk
+            )
+
+        verdict = "SAFETY_REJECTED" if (cached_result and cached_result.get("verdict") == "SAFETY_REJECTED") else "CACHE_MISS"
+        return {
+            "content": llm_answer,
+            "latency_ms": latency_ms,
+            "cost_usd": cost_usd,
+            "tokens_billed": tokens,
+            "verdict": verdict,
+            "similarity": cached_result.get("similarity", 0.0) if cached_result else 0.0,
+            "rejection_reasons": cached_result.get("rejection_reasons", []) if cached_result else [],
+        }
+
+    # 2. Run Direct Groq pass
+    async def run_groq():
+        t0 = time.time()
+        provider = resolve_provider("groq", DEFAULT_PROVIDER)
+        res_data = await provider.complete(model=model, messages=messages)
+        latency_ms = round((time.time() - t0) * 1000, 2)
+        content = res_data["choices"][0]["message"]["content"]
+        tokens = res_data.get("usage", {}).get("total_tokens", 350)
+        cost_usd = round(tokens * 0.00001, 5)
+        return {
+            "content": content,
+            "latency_ms": latency_ms,
+            "cost_usd": cost_usd,
+            "tokens_billed": tokens,
+            "status": "DIRECT_LLM_CALL",
+        }
+
+    try:
+        memolm_out, groq_out = await asyncio.gather(run_memolm(), run_groq())
+        speedup = round(groq_out["latency_ms"] / max(0.1, memolm_out["latency_ms"]), 1)
+        cost_saved_pct = 100 if memolm_out["cost_usd"] == 0 else max(0, round(((groq_out["cost_usd"] - memolm_out["cost_usd"]) / groq_out["cost_usd"]) * 100))
+
+        return JSONResponse({
+            "status": "ok",
+            "model": model,
+            "memolm": memolm_out,
+            "groq": groq_out,
+            "speedup_factor": speedup,
+            "cost_saved_pct": cost_saved_pct,
+        })
+    except Exception as exc:
+        return JSONResponse(
+            status_code=500,
+            content={"error": str(exc), "type": "compare_error"},
+        )
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+

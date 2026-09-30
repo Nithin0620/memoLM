@@ -24,6 +24,7 @@ import {
   Activity,
 } from "lucide-react";
 import { MemoLM, ChatCompletion, ChatCompletionChunk } from "@memolm/sdk";
+import { ColdStartWarning } from "@/components/ColdStartWarning";
 
 interface MessageItem {
   id: string;
@@ -51,7 +52,7 @@ const PRESET_PROMPTS = [
 
 export default function ChatPlaygroundPage() {
   // Config state
-  const [gatewayUrl, setGatewayUrl] = useState("http://localhost:8000");
+  const [gatewayUrl, setGatewayUrl] = useState("https://memolm.onrender.com");
   const [apiKey, setApiKey] = useState("");
   const [tenantId, setTenantId] = useState("default-tenant");
   const [knowledgeVersion, setKnowledgeVersion] = useState("v1.0");
@@ -391,7 +392,7 @@ export default function ChatPlaygroundPage() {
               }`}
             />
             <span className="text-zinc-300">
-              {gatewayOnline === true ? "Gateway Connected (8000)" : "Gateway Offline"}
+              {gatewayOnline === true ? "Gateway Connected" : "Gateway Offline"}
             </span>
           </div>
 
@@ -548,8 +549,25 @@ export default function ChatPlaygroundPage() {
                 </div>
               </div>
             ))}
+            {isLoading && (
+              <div className="my-3">
+                <ColdStartWarning
+                  isLoading={isLoading}
+                  thresholdSeconds={3.5}
+                  serverUrl={gatewayUrl}
+                  mode="inline"
+                />
+              </div>
+            )}
             <div ref={messagesEndRef} />
           </div>
+
+          <ColdStartWarning
+            isLoading={isLoading}
+            thresholdSeconds={4.5}
+            serverUrl={gatewayUrl}
+            mode="overlay"
+          />
 
           {/* Preset Prompts Pills */}
           <div className="px-4 sm:px-6 pt-2 pb-1 flex items-center gap-2 overflow-x-auto max-w-4xl mx-auto w-full no-scrollbar">

@@ -16,10 +16,15 @@ import {
   Layers,
   Calculator,
   ChevronRight,
+  Scale,
+  Flame,
+  Clock,
+  Info,
 } from "lucide-react";
 
 export function Navbar() {
   const [gatewayOnline, setGatewayOnline] = useState<boolean | null>(null);
+  const [showColdStartModal, setShowColdStartModal] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [scrolled, setScrolled] = useState(false);
   const [hoveredTab, setHoveredTab] = useState<string | null>(null);
@@ -35,9 +40,9 @@ export function Navbar() {
   useEffect(() => {
     async function checkHealth() {
       try {
-        const res = await fetch("http://127.0.0.1:8000/openapi.json", {
+        const res = await fetch("https://memolm.onrender.com/openapi.json", {
           method: "HEAD",
-          signal: AbortSignal.timeout(1500),
+          signal: AbortSignal.timeout(2000),
         });
         setGatewayOnline(res.ok);
       } catch {
@@ -52,7 +57,7 @@ export function Navbar() {
   const NAV_ITEMS = [
     { label: "Architecture", href: "/#how-it-works" },
     { label: "Simulator", href: "/#demo" },
-    { label: "Safety Gate", href: "/#features" },
+    { label: "Compare vs Groq", href: "/compare" },
     { label: "Quickstart", href: "/#quickstart" },
     { label: "Calculator", href: "/#roi-calculator" },
   ];
@@ -93,6 +98,25 @@ export function Navbar() {
             </Link>
 
             {/* Live Gateway Indicator */}
+            <button
+              onClick={() => setShowColdStartModal(true)}
+              className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-full border border-white/[0.08] bg-white/[0.02] hover:bg-white/[0.06] text-[11px] font-mono transition-all group"
+              title="Click for Server Status & Cold Start Info"
+            >
+              <span
+                className={`h-1.5 w-1.5 rounded-full ${
+                  gatewayOnline === true
+                    ? "bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.8)]"
+                    : "bg-amber-400 animate-pulse"
+                }`}
+              />
+              <span className="text-zinc-400 group-hover:text-zinc-200">
+                {gatewayOnline === true ? "Gateway: Online" : "Render Cold Start"}
+              </span>
+              {gatewayOnline !== true && (
+                <Flame className="h-3 w-3 text-amber-400 animate-bounce" />
+              )}
+            </button>
           </div>
 
           {/* Desktop Navigation Links */}
@@ -130,6 +154,15 @@ export function Navbar() {
               <Github className="h-3.5 w-3.5 text-zinc-400" />
               <span>Star</span>
             </a>
+
+            {/* Action CTAs */}
+            <Link
+              href="/compare"
+              className="hidden sm:flex items-center gap-1.5 rounded-xl border border-indigo-500/30 bg-indigo-500/10 px-3 py-1.5 text-xs font-semibold text-indigo-300 hover:bg-indigo-500/20 hover:border-indigo-500/50 transition-all shadow-sm"
+            >
+              <Scale className="h-3.5 w-3.5 text-indigo-400" />
+              <span>Compare vs Groq</span>
+            </Link>
 
             {/* Primary Action Button */}
             <Link
@@ -174,7 +207,7 @@ export function Navbar() {
                 />
                 <span>
                   Gateway:{" "}
-                  {gatewayOnline === true ? "Online (8000)" : "Simulated"}
+                  {gatewayOnline === true ? "Online" : "Simulated"}
                 </span>
               </div>
               <span className="text-[10px] text-zinc-500">FastAPI</span>
@@ -222,6 +255,64 @@ export function Navbar() {
           </div>
         )}
       </div>
+
+      {/* Cold Start Information Modal */}
+      {showColdStartModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="relative w-full max-w-md rounded-3xl border border-amber-500/30 bg-[#0c0e14] p-6 shadow-2xl backdrop-blur-2xl ring-1 ring-white/10">
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-400 shrink-0">
+                  <Flame className="h-6 w-6 animate-pulse text-amber-400" />
+                </div>
+                <div>
+                  <span className="inline-flex items-center gap-1 text-[11px] font-mono px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/30">
+                    Render Free Tier Notice
+                  </span>
+                  <h3 className="text-base font-bold text-white mt-0.5">
+                    Backend Server Cold Start
+                  </h3>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowColdStartModal(false)}
+                className="p-1.5 text-zinc-400 hover:text-white rounded-lg hover:bg-white/5 transition-colors"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="mt-4 space-y-3 text-xs sm:text-sm text-zinc-300 leading-relaxed">
+              <p>
+                The backend API is deployed on <span className="font-semibold text-white">Render&apos;s free tier</span>. To conserve resources, the container enters sleep mode after 15 minutes of inactivity.
+              </p>
+              <div className="rounded-2xl border border-amber-500/20 bg-amber-500/5 p-3.5 space-y-1.5">
+                <div className="flex items-center gap-1.5 text-xs font-semibold text-amber-300">
+                  <Clock className="h-3.5 w-3.5" /> Initial Boot Delay: 30–50 Seconds
+                </div>
+                <p className="text-xs text-zinc-400">
+                  When waking from sleep, the first request will take roughly 30–50 seconds to initialize Qdrant vector storage and the FastAPI gateway.
+                </p>
+              </div>
+              <p className="text-xs text-emerald-400 font-mono">
+                ⚡ Once awake, all cached queries respond in sub-20ms!
+              </p>
+            </div>
+
+            <div className="mt-5 flex items-center justify-between pt-3 border-t border-white/[0.08]">
+              <span className="text-[11px] font-mono text-zinc-500 truncate">
+                https://memolm.onrender.com
+              </span>
+              <button
+                onClick={() => setShowColdStartModal(false)}
+                className="px-4 py-1.5 text-xs font-semibold text-zinc-950 bg-white hover:bg-zinc-200 rounded-xl transition-all shadow-sm"
+              >
+                Got it
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </header>
   );
 }

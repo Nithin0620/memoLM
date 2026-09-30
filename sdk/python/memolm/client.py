@@ -116,7 +116,7 @@ class MemoLM:
 
     def __init__(
         self,
-        base_url: str = "http://localhost:8000",
+        base_url: str = "https://memolm.onrender.com",
         api_key: str = "memo-key",
         default_tenant: str = "default-tenant",
         default_knowledge_version: str = "v1",

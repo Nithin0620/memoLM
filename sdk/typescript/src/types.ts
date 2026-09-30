@@ -9,7 +9,7 @@ export interface Message {
 export interface MemoLMClientConfig {
   /**
    * Base URL of the MemoLM gateway.
-   * @default "http://localhost:8000"
+   * @default "https://memolm.onrender.com"
    */
   baseURL?: string;
 

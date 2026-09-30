@@ -15,6 +15,7 @@ import {
   Terminal,
 } from "lucide-react";
 import { DemoMessage, ExplainabilityData } from "@/lib/types";
+import { ColdStartWarning } from "@/components/ColdStartWarning";
 
 const SIMULATED_CACHE_ENTRIES = [
   {
@@ -197,7 +198,7 @@ export function InteractiveSimulator() {
     let realData: any = null;
     try {
       const response = await fetch(
-        "http://127.0.0.1:8000/v1/chat/completions",
+        "https://memolm.onrender.com/v1/chat/completions",
         {
           method: "POST",
           headers: {
@@ -210,7 +211,7 @@ export function InteractiveSimulator() {
             model: "openai/gpt-oss-20b",
             messages: [{ role: "user", content: query }],
           }),
-          signal: AbortSignal.timeout(3000),
+          signal: AbortSignal.timeout(60000),
         },
       );
 
@@ -321,7 +322,7 @@ export function InteractiveSimulator() {
     let realData: any = null;
     try {
       const response = await fetch(
-        "http://127.0.0.1:8000/v1/chat/completions",
+        "https://memolm.onrender.com/v1/chat/completions",
         {
           method: "POST",
           headers: {
@@ -334,7 +335,7 @@ export function InteractiveSimulator() {
             model: "openai/gpt-oss-20b",
             messages: [{ role: "user", content: query }],
           }),
-          signal: AbortSignal.timeout(4000),
+          signal: AbortSignal.timeout(60000),
         },
       );
 
@@ -701,11 +702,19 @@ export function InteractiveSimulator() {
                 ))}
 
                 {isLoading && (
-                  <div className="flex items-center gap-2 text-xs font-mono text-indigo-400 py-2">
-                    <span className="h-1.5 w-1.5 rounded-full bg-indigo-400 animate-ping" />
-                    <span>
-                      Evaluating Safety Gate &amp; Qdrant vector index...
-                    </span>
+                  <div className="space-y-2 py-2">
+                    <div className="flex items-center gap-2 text-xs font-mono text-indigo-400">
+                      <span className="h-1.5 w-1.5 rounded-full bg-indigo-400 animate-ping" />
+                      <span>
+                        Evaluating Safety Gate &amp; Qdrant vector index...
+                      </span>
+                    </div>
+                    <ColdStartWarning
+                      isLoading={isLoading}
+                      thresholdSeconds={3.5}
+                      serverUrl="https://memolm.onrender.com"
+                      mode="inline"
+                    />
                   </div>
                 )}
               </div>
