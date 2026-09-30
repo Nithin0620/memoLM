@@ -4,8 +4,12 @@
 > 
 > *Drop-in OpenAI & Groq compatible proxy with native Python and TypeScript SDKs. Prevents unnecessary LLM calls by serving cached answers only when they are semantically relevant and verified safe to reuse.*
 
+🌐 **Live Website & Playground:** [https://memolm.ssh.net.in](https://memolm.ssh.net.in)  
+💬 **Realtime Chat Console:** [https://memolm.ssh.net.in/chat](https://memolm.ssh.net.in/chat)
+
 [![npm version](https://img.shields.io/npm/v/@memolm/sdk.svg?style=flat-square&color=6366f1)](https://www.npmjs.com/package/@memolm/sdk)
 [![npm downloads](https://img.shields.io/npm/dm/@memolm/sdk.svg?style=flat-square)](https://www.npmjs.com/package/@memolm/sdk)
+[![Website: memolm.ssh.net.in](https://img.shields.io/badge/Live%20Demo-memolm.ssh.net.in-emerald.svg?style=flat-square)](https://memolm.ssh.net.in)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)](LICENSE)
 
 ---

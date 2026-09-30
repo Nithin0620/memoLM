@@ -12,6 +12,11 @@ license = "MIT"
 authors = [
     { name = "MemoLM Team" }
 ]
+[project.urls]
+Homepage = "https://memolm.ssh.net.in"
+Documentation = "https://memolm.ssh.net.in"
+Repository = "https://github.com/Nithin0620/memoLM"
+
 keywords = ["memolm", "llm", "cache", "semantic-cache", "openai", "groq", "gemini", "ai-gateway"]
 classifiers = [
     "Development Status :: 4 - Beta",

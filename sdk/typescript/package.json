@@ -2,6 +2,7 @@
   "name": "@memolm/sdk",
   "version": "0.1.0",
   "description": "Official TypeScript & JavaScript SDK for MemoLM - Safe Semantic Caching & Response Firewall for LLMs",
+  "homepage": "https://memolm.ssh.net.in",
   "main": "./dist/index.js",
   "module": "./dist/index.mjs",
   "types": "./dist/index.d.ts",
