@@ -50,9 +50,32 @@ const PRESET_PROMPTS = [
   "What is MemoLM and how does it prevent data leaks?",
 ];
 
+const normalizeHitType = (rawHitType?: string | null, similarity?: number) => {
+  const normalized = (rawHitType || "").toUpperCase();
+
+  if (!normalized) return "LLM_CALL";
+
+  if (normalized.includes("EXACT")) return "EXACT_CACHE_HIT";
+  if (normalized.includes("SEMANTIC")) return "SEMANTIC_CACHE_HIT";
+  if (
+    normalized.includes("SAFE_CACHE_HIT") ||
+    normalized.includes("CACHE_HIT")
+  ) {
+    return typeof similarity === "number" && similarity >= 0.995
+      ? "EXACT_CACHE_HIT"
+      : "SEMANTIC_CACHE_HIT";
+  }
+  if (normalized.includes("SAFETY_REJECTED") || normalized.includes("REJECT")) {
+    return "ERROR";
+  }
+
+  return "LLM_CALL";
+};
+
 export default function ChatPlaygroundPage() {
   // Config state
   const [gatewayUrl, setGatewayUrl] = useState("https://memolm.onrender.com");
+  //const [gatewayUrl, setGatewayUrl] = useState("http://127.0.0.1:8000");
   const [apiKey, setApiKey] = useState("");
   const [tenantId, setTenantId] = useState("default-tenant");
   const [knowledgeVersion, setKnowledgeVersion] = useState("v1.0");
@@ -85,7 +108,10 @@ export default function ChatPlaygroundPage() {
       role: "assistant",
       content:
         "👋 Welcome to the **MemoLM Realtime Chat Playground**!\n\nThis interface directly uses the **`@memolm/sdk`** TypeScript SDK in your browser. Ask any question twice (or rephrased) to test exact and semantic cache hits in real time!",
-      timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+      timestamp: new Date().toLocaleTimeString([], {
+        hour: "2-digit",
+        minute: "2-digit",
+      }),
     },
   ]);
 
@@ -128,7 +154,10 @@ export default function ChatPlaygroundPage() {
       id: `user-${Date.now()}`,
       role: "user",
       content: textToSend,
-      timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+      timestamp: new Date().toLocaleTimeString([], {
+        hour: "2-digit",
+        minute: "2-digit",
+      }),
     };
 
     const newHistory = [...messages, userMessage];
@@ -141,7 +170,10 @@ export default function ChatPlaygroundPage() {
       id: assistantMessageId,
       role: "assistant",
       content: "",
-      timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+      timestamp: new Date().toLocaleTimeString([], {
+        hour: "2-digit",
+        minute: "2-digit",
+      }),
       metadata: {
         isStreaming: true,
       },
@@ -192,6 +224,11 @@ export default function ChatPlaygroundPage() {
             finalMetadata = chunk._memolm;
           }
 
+          const hitType = normalizeHitType(
+            finalMetadata?.hitType || finalMetadata?.verdict,
+            finalMetadata?.similarity,
+          );
+
           setMessages((prev) =>
             prev.map((msg) =>
               msg.id === assistantMessageId
@@ -202,23 +239,28 @@ export default function ChatPlaygroundPage() {
                       ...msg.metadata,
                       ...(finalMetadata
                         ? {
-                            hitType: finalMetadata.hitType,
+                            hitType,
                             similarity: finalMetadata.similarity,
                             latencyMs: finalMetadata.latencyMs,
                             costUsd: finalMetadata.estimatedCostUsd,
-                            safetyVerdict: finalMetadata.safetyVerdict,
+                            safetyVerdict:
+                              finalMetadata.safetyVerdict ||
+                              finalMetadata.verdict,
                             matchedQuery: finalMetadata.matchedQuery,
                           }
                         : {}),
                     },
                   }
-                : msg
-            )
+                : msg,
+            ),
           );
         }
 
         const elapsedMs = performance.now() - startTime;
-        const hitType = finalMetadata?.hitType || "LLM_CALL";
+        const normalizedHitType = normalizeHitType(
+          finalMetadata?.hitType || finalMetadata?.verdict,
+          finalMetadata?.similarity,
+        );
 
         setMessages((prev) =>
           prev.map((msg) =>
@@ -229,17 +271,21 @@ export default function ChatPlaygroundPage() {
                     ...msg.metadata,
                     isStreaming: false,
                     latencyMs: finalMetadata?.latencyMs || elapsedMs,
-                    hitType: hitType,
-                    similarity: finalMetadata?.similarity ?? (hitType.includes("CACHE") ? 1.0 : 0.0),
-                    costUsd: finalMetadata?.estimatedCostUsd || (hitType.includes("CACHE") ? 0 : 0.002),
+                    hitType: normalizedHitType,
+                    similarity:
+                      finalMetadata?.similarity ??
+                      (normalizedHitType.includes("CACHE") ? 1.0 : 0.0),
+                    costUsd:
+                      finalMetadata?.estimatedCostUsd ||
+                      (normalizedHitType.includes("CACHE") ? 0 : 0.002),
                   },
                 }
-              : msg
-          )
+              : msg,
+          ),
         );
 
         // Update session metrics
-        updateMetrics(hitType, elapsedMs);
+        updateMetrics(normalizedHitType, elapsedMs, finalMetadata?.similarity);
       } else {
         // NON-STREAMING VIA SDK
         const res = (await client.chat.completions.create({
@@ -256,6 +302,10 @@ export default function ChatPlaygroundPage() {
         const content = res.choices[0]?.message?.content || "";
         const meta = res._memolm;
         const elapsedMs = performance.now() - startTime;
+        const normalizedHitType = normalizeHitType(
+          meta?.hitType || meta?.verdict,
+          meta?.similarity,
+        );
 
         setMessages((prev) =>
           prev.map((msg) =>
@@ -265,20 +315,20 @@ export default function ChatPlaygroundPage() {
                   content: content,
                   metadata: {
                     isStreaming: false,
-                    hitType: meta?.hitType || "LLM_CALL",
+                    hitType: normalizedHitType,
                     similarity: meta?.similarity,
                     latencyMs: meta?.latencyMs || elapsedMs,
                     costUsd: meta?.estimatedCostUsd || 0,
-                    safetyVerdict: meta?.safetyVerdict,
+                    safetyVerdict: meta?.safetyVerdict || meta?.verdict,
                     matchedQuery: meta?.matchedQuery,
                   },
                 }
-              : msg
-          )
+              : msg,
+          ),
         );
 
         // Update session metrics
-        updateMetrics(meta?.hitType || "LLM_CALL", elapsedMs);
+        updateMetrics(normalizedHitType, elapsedMs, meta?.similarity);
       }
     } catch (err: any) {
       console.error("Chat Error:", err);
@@ -294,8 +344,8 @@ export default function ChatPlaygroundPage() {
                   safetyVerdict: "REJECTED",
                 },
               }
-            : msg
-        )
+            : msg,
+        ),
       );
     } finally {
       setIsLoading(false);
@@ -303,10 +353,15 @@ export default function ChatPlaygroundPage() {
     }
   };
 
-  const updateMetrics = (hitType: string, latencyMs: number) => {
+  const updateMetrics = (
+    hitType: string,
+    latencyMs: number,
+    similarity?: number,
+  ) => {
     setSessionStats((prev) => {
-      const isExact = hitType === "EXACT_CACHE_HIT";
-      const isSemantic = hitType === "SEMANTIC_CACHE_HIT";
+      const normalizedHitType = normalizeHitType(hitType, similarity);
+      const isExact = normalizedHitType === "EXACT_CACHE_HIT";
+      const isSemantic = normalizedHitType === "SEMANTIC_CACHE_HIT";
       const isHit = isExact || isSemantic;
 
       const newTotal = prev.totalRequests + 1;
@@ -316,7 +371,8 @@ export default function ChatPlaygroundPage() {
       const newLlm = prev.llmCalls + (isHit ? 0 : 1);
       const tokensSaved = prev.tokensSaved + (isHit ? 350 : 0);
       const costSavedUsd = prev.costSavedUsd + (isHit ? 0.0035 : 0);
-      const latencySavedMs = prev.latencySavedMs + (isHit ? Math.max(0, 1200 - latencyMs) : 0);
+      const latencySavedMs =
+        prev.latencySavedMs + (isHit ? Math.max(0, 1200 - latencyMs) : 0);
 
       return {
         totalRequests: newTotal,
@@ -334,12 +390,17 @@ export default function ChatPlaygroundPage() {
   // Invalidate Cache Handler
   const handleInvalidate = async () => {
     try {
-      const client = new MemoLM({ baseURL: gatewayUrl, apiKey: apiKey || undefined });
+      const client = new MemoLM({
+        baseURL: gatewayUrl,
+        apiKey: apiKey || undefined,
+      });
       const res = await client.cache.invalidate({
         tenantId: tenantId || undefined,
         version: knowledgeVersion || undefined,
       });
-      alert(`✅ Cache Invalidated!\nEntries purged: ${res.deleted_count ?? "All matching"}`);
+      alert(
+        `✅ Cache Invalidated!\nEntries purged: ${res.deleted_count ?? "All matching"}`,
+      );
     } catch (err: any) {
       alert(`⚠️ Cache Invalidation Failed: ${err.message}`);
     }
@@ -351,8 +412,12 @@ export default function ChatPlaygroundPage() {
       {
         id: "intro-reset",
         role: "assistant",
-        content: "🧹 Conversation cleared. Ask a new question to test the cache!",
-        timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+        content:
+          "🧹 Conversation cleared. Ask a new question to test the cache!",
+        timestamp: new Date().toLocaleTimeString([], {
+          hour: "2-digit",
+          minute: "2-digit",
+        }),
       },
     ]);
   };
@@ -374,7 +439,9 @@ export default function ChatPlaygroundPage() {
             <div className="flex h-6 w-6 items-center justify-center rounded-lg border border-indigo-500/30 bg-indigo-500/10">
               <Shield className="h-3.5 w-3.5 text-indigo-400" />
             </div>
-            <span className="font-mono font-bold text-sm text-white">memoLM</span>
+            <span className="font-mono font-bold text-sm text-white">
+              memoLM
+            </span>
             <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
               TS SDK Playground
             </span>
@@ -428,7 +495,9 @@ export default function ChatPlaygroundPage() {
               <div className="flex items-center gap-1.5">
                 <Activity className="w-3.5 h-3.5 text-indigo-400" />
                 <span>Requests:</span>
-                <span className="text-white font-semibold">{sessionStats.totalRequests}</span>
+                <span className="text-white font-semibold">
+                  {sessionStats.totalRequests}
+                </span>
               </div>
               <div className="flex items-center gap-1.5">
                 <Zap className="w-3.5 h-3.5 text-emerald-400" />
@@ -439,7 +508,8 @@ export default function ChatPlaygroundPage() {
                     : "0%"}
                 </span>
                 <span className="text-[10px] text-zinc-500">
-                  ({sessionStats.exactHits} exact, {sessionStats.semanticHits} semantic)
+                  ({sessionStats.exactHits} exact, {sessionStats.semanticHits}{" "}
+                  semantic)
                 </span>
               </div>
               <div className="flex items-center gap-1.5">
@@ -449,17 +519,11 @@ export default function ChatPlaygroundPage() {
                   ${sessionStats.costSavedUsd.toFixed(4)}
                 </span>
               </div>
-              <div className="flex items-center gap-1.5">
-                <Clock className="w-3.5 h-3.5 text-cyan-400" />
-                <span>Time Saved:</span>
-                <span className="text-cyan-300 font-semibold">
-                  {(sessionStats.latencySavedMs / 1000).toFixed(2)}s
-                </span>
-              </div>
             </div>
 
             <div className="text-[11px] text-zinc-500 hidden md:block">
-              SDK Mode: <span className="text-zinc-300">@memolm/sdk (In-Browser TS)</span>
+              SDK Mode:{" "}
+              <span className="text-zinc-300">@memolm/sdk (In-Browser TS)</span>
             </div>
           </div>
 
@@ -498,7 +562,9 @@ export default function ChatPlaygroundPage() {
                         : "bg-[#111318] border border-white/[0.08] text-zinc-200 shadow-md rounded-tl-sm"
                     }`}
                   >
-                    <div className="whitespace-pre-wrap font-sans">{msg.content}</div>
+                    <div className="whitespace-pre-wrap font-sans">
+                      {msg.content}
+                    </div>
                     {msg.metadata?.isStreaming && (
                       <span className="inline-block w-1.5 h-4 ml-1 bg-indigo-400 animate-pulse align-middle" />
                     )}
@@ -516,7 +582,9 @@ export default function ChatPlaygroundPage() {
                       {msg.metadata.hitType === "SEMANTIC_CACHE_HIT" && (
                         <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 font-semibold shadow-[0_0_8px_rgba(6,182,212,0.15)]">
                           <Zap className="w-3 h-3 text-cyan-400" />
-                          SEMANTIC HIT ({Math.round((msg.metadata.similarity ?? 0.95) * 100)}%)
+                          SEMANTIC HIT (
+                          {Math.round((msg.metadata.similarity ?? 0.95) * 100)}
+                          %)
                         </span>
                       )}
                       {msg.metadata.hitType === "LLM_CALL" && (
@@ -541,7 +609,8 @@ export default function ChatPlaygroundPage() {
 
                       {msg.metadata.costUsd !== undefined && (
                         <span className="text-zinc-500 flex items-center gap-0.5">
-                          <DollarSign className="w-3 h-3" />${msg.metadata.costUsd.toFixed(5)}
+                          <DollarSign className="w-3 h-3" />$
+                          {msg.metadata.costUsd.toFixed(5)}
                         </span>
                       )}
                     </div>
@@ -571,7 +640,9 @@ export default function ChatPlaygroundPage() {
 
           {/* Preset Prompts Pills */}
           <div className="px-4 sm:px-6 pt-2 pb-1 flex items-center gap-2 overflow-x-auto max-w-4xl mx-auto w-full no-scrollbar">
-            <span className="text-[11px] font-mono text-zinc-500 shrink-0">Try test:</span>
+            <span className="text-[11px] font-mono text-zinc-500 shrink-0">
+              Try test:
+            </span>
             {PRESET_PROMPTS.map((prompt, idx) => (
               <button
                 key={idx}
@@ -636,7 +707,9 @@ export default function ChatPlaygroundPage() {
             <div className="flex items-center justify-between pb-3 border-b border-white/[0.08]">
               <div className="flex items-center gap-2">
                 <Sliders className="w-4 h-4 text-indigo-400" />
-                <h2 className="font-mono font-semibold text-sm text-white">SDK Parameters</h2>
+                <h2 className="font-mono font-semibold text-sm text-white">
+                  SDK Parameters
+                </h2>
               </div>
               <button
                 onClick={() => setShowSettings(false)}
@@ -678,7 +751,9 @@ export default function ChatPlaygroundPage() {
             <div className="space-y-1.5">
               <label className="text-xs font-mono text-zinc-400 flex items-center justify-between">
                 <span>Knowledge Version</span>
-                <span className="text-[10px] text-zinc-500">knowledgeVersion</span>
+                <span className="text-[10px] text-zinc-500">
+                  knowledgeVersion
+                </span>
               </label>
               <input
                 type="text"
@@ -690,7 +765,9 @@ export default function ChatPlaygroundPage() {
 
             {/* Risk Level */}
             <div className="space-y-1.5">
-              <label className="text-xs font-mono text-zinc-400">Risk Level Policy</label>
+              <label className="text-xs font-mono text-zinc-400">
+                Risk Level Policy
+              </label>
               <div className="grid grid-cols-3 gap-1.5">
                 {(["low", "medium", "high"] as const).map((lvl) => (
                   <button
@@ -723,7 +800,9 @@ export default function ChatPlaygroundPage() {
             <div className="space-y-1.5">
               <div className="flex justify-between text-xs font-mono text-zinc-400">
                 <span>Similarity Threshold</span>
-                <span className="text-indigo-400 font-semibold">{similarityThreshold}</span>
+                <span className="text-indigo-400 font-semibold">
+                  {similarityThreshold}
+                </span>
               </div>
               <input
                 type="range"
@@ -731,7 +810,9 @@ export default function ChatPlaygroundPage() {
                 max={0.99}
                 step={0.01}
                 value={similarityThreshold}
-                onChange={(e) => setSimilarityThreshold(parseFloat(e.target.value))}
+                onChange={(e) =>
+                  setSimilarityThreshold(parseFloat(e.target.value))
+                }
                 className="w-full accent-indigo-500 cursor-pointer"
               />
             </div>
@@ -761,7 +842,9 @@ export default function ChatPlaygroundPage() {
 
             {/* Cache Actions */}
             <div className="space-y-2 pt-4 border-t border-white/[0.08]">
-              <span className="text-xs font-mono text-zinc-400 font-semibold">Cache Operations</span>
+              <span className="text-xs font-mono text-zinc-400 font-semibold">
+                Cache Operations
+              </span>
               <button
                 onClick={handleInvalidate}
                 className="w-full flex items-center justify-center gap-2 text-xs font-mono py-2 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 border border-rose-500/30 transition-all"

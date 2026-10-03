@@ -16,7 +16,6 @@ import {
   Layers,
   Calculator,
   ChevronRight,
-  Scale,
   Flame,
   Clock,
   Info,
@@ -57,7 +56,6 @@ export function Navbar() {
   const NAV_ITEMS = [
     { label: "Architecture", href: "/#how-it-works" },
     { label: "Simulator", href: "/#demo" },
-    { label: "Compare vs Groq", href: "/compare" },
     { label: "Quickstart", href: "/#quickstart" },
     { label: "Calculator", href: "/#roi-calculator" },
   ];
@@ -156,14 +154,6 @@ export function Navbar() {
             </a>
 
             {/* Action CTAs */}
-            <Link
-              href="/compare"
-              className="hidden sm:flex items-center gap-1.5 rounded-xl border border-indigo-500/30 bg-indigo-500/10 px-3 py-1.5 text-xs font-semibold text-indigo-300 hover:bg-indigo-500/20 hover:border-indigo-500/50 transition-all shadow-sm"
-            >
-              <Scale className="h-3.5 w-3.5 text-indigo-400" />
-              <span>Compare vs Groq</span>
-            </Link>
-
             {/* Primary Action Button */}
             <Link
               href="/chat"

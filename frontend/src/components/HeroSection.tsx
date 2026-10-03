@@ -2,7 +2,6 @@
 
 import React, { useState } from "react";
 import {
-  ArrowRight,
   Check,
   Copy,
   Shield,
@@ -59,14 +58,6 @@ export function HeroSection() {
 
         {/* Dual Actions */}
         <div className="mt-10 flex flex-wrap items-center justify-center gap-3">
-          <a
-            href="/compare"
-            className="flex items-center gap-2 rounded-lg bg-indigo-600 px-5 py-2.5 text-xs font-semibold text-white hover:bg-indigo-500 transition-all shadow-[0_0_20px_rgba(99,102,241,0.3)]"
-          >
-            <span>Compare vs Groq Live</span>
-            <ArrowRight className="h-3.5 w-3.5" />
-          </a>
-
           <a
             href="/chat"
             className="flex items-center gap-2 rounded-lg border border-indigo-500/30 bg-indigo-500/10 px-5 py-2.5 text-xs font-semibold text-indigo-300 hover:bg-indigo-500/20 hover:border-indigo-500/50 transition-all"

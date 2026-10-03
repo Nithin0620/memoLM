@@ -30,11 +30,6 @@ export function Footer() {
             <h4 className="font-semibold text-zinc-300 uppercase tracking-wider text-[11px]">Product</h4>
             <ul className="mt-3 space-y-2 text-zinc-400 text-xs font-sans">
               <li>
-                <a href="/compare" className="text-indigo-400 font-medium hover:text-indigo-300 transition-colors">
-                  ⚡ Compare vs Groq Live
-                </a>
-              </li>
-              <li>
                 <a href="/chat" className="hover:text-white transition-colors">
                   Realtime Chat (SDK)
                 </a>

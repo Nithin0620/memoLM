@@ -2,7 +2,7 @@ import json
 import os
 import sys
 import time
-from typing import AsyncGenerator
+from typing import AsyncGenerator, List, Optional
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -42,7 +42,7 @@ app.add_middleware(
 async def initialize_cache() -> None:
     cache.ensure_collection()
 
-async def stream_cached_response(cached_text: str) -> AsyncGenerator[str, None]:
+async def stream_cached_response(cached_text: str, stats: dict) -> AsyncGenerator[str, None]:
     chunk_size = 15
     for i in range(0, len(cached_text), chunk_size):
         chunk = cached_text[i : i + chunk_size]
@@ -53,7 +53,57 @@ async def stream_cached_response(cached_text: str) -> AsyncGenerator[str, None]:
         }
         yield f"data: {json.dumps(data)}\n\n"
         time.sleep(0.01)
+    async for frame in stream_telemetry(stats):
+        yield frame
     yield "data: [DONE]\n\n"
+
+
+def build_memolm_stats(
+    verdict: str,
+    *,
+    similarity: float = 0.0,
+    latency_ms: float = 0.0,
+    latency_saved_ms: float = 0.0,
+    cost_saved: float = 0.0,
+    cost_incurred: float = 0.0,
+    rejection_reasons: Optional[List[str]] = None,
+) -> dict:
+    """Build the stable telemetry shape used by both JSON and SSE responses."""
+    stats = {
+        "verdict": verdict,
+        "hitType": verdict,
+        "similarity": similarity,
+        "latency_ms": latency_ms,
+        "latencyMs": latency_ms,
+        "latency_saved": latency_saved_ms / 1000,
+        "latency_saved_ms": latency_saved_ms,
+        "latencySavedMs": latency_saved_ms,
+        "cost_saved": cost_saved,
+        "costSavedUsd": cost_saved,
+        "cost_incurred": cost_incurred,
+        "estimatedCostUsd": cost_incurred,
+        "rejection_reasons": rejection_reasons or [],
+    }
+    return stats
+
+
+def add_memolm_stats(response: dict, stats: dict) -> dict:
+    """Attach the standard gateway stats and the legacy chat UI metadata alias."""
+    response["memolm_stats"] = stats
+    response["_memolm"] = stats
+    return response
+
+
+async def stream_telemetry(stats: dict) -> AsyncGenerator[str, None]:
+    chunk = {
+        "id": "chatcmpl-memolm-telemetry",
+        "object": "chat.completion.chunk",
+        "choices": [{"delta": {}}],
+        "memolm_stats": stats,
+        "_memolm": stats,
+    }
+    yield f"data: {json.dumps(chunk)}\n\n"
+
 
 @app.post("/openai/v1/chat/completions")
 @app.post("/v1/chat/completions")
@@ -141,6 +191,7 @@ async def chat_completions(request: Request):
     current_query, prior_user_turns = cache.user_chain(messages)
     is_personal = contains_personal_data(current_query, prior_user_turns)
 
+    cache_lookup_started = time.time()
     cached_result = None
     if not force_refresh and knowledge_version and not is_personal:
         cached_result = cache.fetch_from_cache(
@@ -158,19 +209,27 @@ async def chat_completions(request: Request):
 
     if cached_result and cached_result.get("verdict") == "SAFE_CACHE_HIT":
         cached_response = cached_result["payload"]["response"]
+        cache_latency_ms = round((time.time() - cache_lookup_started) * 1000, 2)
+        stats = build_memolm_stats(
+            "SAFE_CACHE_HIT",
+            similarity=cached_result.get("similarity", 0.0),
+            latency_ms=cache_latency_ms,
+            latency_saved_ms=cached_result.get("latency_saved_ms", 0),
+            cost_saved=cached_result.get("cost_saved", 0.0),
+        )
         print(f"⚡ CACHE HIT! Served in ~20ms")
         if stream:
             return StreamingResponse(
-                stream_cached_response(cached_response),
+                stream_cached_response(cached_response, stats),
                 media_type="text/event-stream"
             )
         else:
-            return JSONResponse({
+            response = {
                 "id": "chatcmpl-memolm-cache",
                 "object": "chat.completion",
                 "choices": [{"message": {"role": "assistant", "content": cached_response}}],
-                "memolm_stats": cached_result
-            })
+            }
+            return JSONResponse(add_memolm_stats(response, stats))
 
     if cache_only:
         return JSONResponse(
@@ -212,6 +271,8 @@ async def chat_completions(request: Request):
 
         latency_ms = round((time.time() - t0) * 1000, 2)
         llm_answer = res_data["choices"][0]["message"]["content"]
+        tokens = (res_data.get("usage") or {}).get("total_tokens") or 350
+        cost_incurred = round(tokens * 0.00001, 5)
 
         if ttl > 0:
             cache.save_to_cache(
@@ -220,26 +281,24 @@ async def chat_completions(request: Request):
             )
 
         if cached_result and cached_result.get("verdict") == "SAFETY_REJECTED":
-            res_data["memolm_stats"] = {
-                "verdict": "SAFETY_REJECTED",
-                "similarity": cached_result.get("similarity", 0.0),
-                "rejection_reasons": cached_result.get("rejection_reasons", []),
-                "latency_ms": latency_ms,
-                "cost_incurred": 0.005,
-                "payload": None,
-            }
+            stats = build_memolm_stats(
+                "SAFETY_REJECTED",
+                similarity=cached_result.get("similarity", 0.0),
+                latency_ms=latency_ms,
+                cost_incurred=cost_incurred,
+                rejection_reasons=cached_result.get("rejection_reasons", []),
+            )
         else:
-            res_data["memolm_stats"] = {
-                "verdict": "CACHE_MISS",
-                "similarity": 0.0,
-                "latency_ms": latency_ms,
-                "cost_incurred": 0.005,
-                "payload": None,
-            }
-        return JSONResponse(res_data)
+            stats = build_memolm_stats(
+                "CACHE_MISS",
+                latency_ms=latency_ms,
+                cost_incurred=cost_incurred,
+            )
+        return JSONResponse(add_memolm_stats(res_data, stats))
 
     async def stream_from_llm():
         accumulated_answer = ""
+        stream_started_at = time.time()
         try:
             async for chunk in provider.stream(
                 model=model,
@@ -260,12 +319,29 @@ async def chat_completions(request: Request):
             yield "data: [DONE]\n\n"
             return
 
-        yield "data: [DONE]\n\n"
         if ttl > 0 and accumulated_answer.strip():
             cache.save_to_cache(
                 tenant_id, provider.name, model, messages, accumulated_answer,
                 version=knowledge_version, ttl=ttl, risk=risk_level
             )
+        stream_latency_ms = round((time.time() - stream_started_at) * 1000, 2)
+        verdict = (
+            "SAFETY_REJECTED"
+            if cached_result and cached_result.get("verdict") == "SAFETY_REJECTED"
+            else "CACHE_MISS"
+        )
+        stats = build_memolm_stats(
+            verdict,
+            similarity=cached_result.get("similarity", 0.0) if cached_result else 0.0,
+            latency_ms=stream_latency_ms,
+            cost_incurred=0.0035,
+            rejection_reasons=(
+                cached_result.get("rejection_reasons", []) if cached_result else []
+            ),
+        )
+        async for frame in stream_telemetry(stats):
+            yield frame
+        yield "data: [DONE]\n\n"
 
     return StreamingResponse(stream_from_llm(), media_type="text/event-stream")
 
@@ -480,4 +556,3 @@ async def compare_endpoint(request: Request):
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
-
